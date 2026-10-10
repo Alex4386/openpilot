@@ -4,6 +4,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.network.network_layout import NetworkLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.device import DeviceLayoutMici
+from openpilot.selfdrive.ui.mici.layouts.settings.langpu import LanGpuLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.developer import DeveloperLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.software import SoftwareLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.firehose import FirehoseLayout
@@ -32,6 +33,10 @@ class SettingsLayout(NavScroller):
     device_btn = SettingsBigButton("device", "", gui_app.texture("icons_mici/settings/device_icon.png", 72, 58))
     device_btn.set_click_callback(lambda: gui_app.push_widget(device_panel))
 
+    langpu_panel = LanGpuLayoutMici()
+    langpu_btn = SettingsBigButton("lan gpu", "", gui_app.texture("icons_mici/chestnut.png", 76, 56))
+    langpu_btn.set_click_callback(lambda: gui_app.push_widget(langpu_panel))
+
     software_panel = SoftwareLayoutMici()
     software_btn = SettingsBigButton("software", "", gui_app.texture("icons_mici/settings/software.png", 64, 75))
     software_btn.set_click_callback(lambda: gui_app.push_widget(software_panel))
@@ -48,6 +53,7 @@ class SettingsLayout(NavScroller):
       toggles_btn,
       network_btn,
       device_btn,
+      langpu_btn,
       software_btn,
       firehose_btn,
       developer_btn,
