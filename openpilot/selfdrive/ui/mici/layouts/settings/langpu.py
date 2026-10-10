@@ -10,14 +10,14 @@ from openpilot.system.ui.widgets.scroller import NavScroller
 
 
 class LanGpuLayoutMici(NavScroller):
-  """Run the big driving model on a computer on the network (e.g. a Mac running Yanggang)."""
+  """Run the big driving model on a computer on the network (e.g. a Mac running Bamyanggang)."""
 
   def __init__(self):
     super().__init__()
     self._usb_peer_checked = 0.
 
     enabled_toggle = BigParamControl("lan gpu", "GpuOnLanEnabled",
-                                     description="Run the big driving model on a computer on the network, e.g. a Mac running Yanggang. " +
+                                     description="Run the big driving model on a computer on the network, e.g. a Mac running Bamyanggang. " +
                                                  "The on-device model is used whenever the server is slow or unreachable. Takes effect on the next drive.")
 
     def server_callback():
