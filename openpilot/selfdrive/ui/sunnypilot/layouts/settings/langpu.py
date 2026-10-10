@@ -19,7 +19,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
 class LanGpuLayout(Widget):
-  """Run the big driving model on a computer on the network (e.g. a Mac running Yanggang)."""
+  """Run the big driving model on a computer on the network (e.g. a Mac running Bamyanggang)."""
 
   def __init__(self):
     super().__init__()
@@ -30,7 +30,7 @@ class LanGpuLayout(Widget):
   def _initialize_items(self):
     self._enabled = toggle_item_sp(
       title=lambda: tr("lan gpu"),
-      description=lambda: tr("Run the big driving model on a computer on the network, e.g. a Mac running Yanggang. " +
+      description=lambda: tr("Run the big driving model on a computer on the network, e.g. a Mac running Bamyanggang. " +
                              "The on-device model keeps running and is used whenever the server is slow or unreachable. " +
                              "Takes effect on the next drive."),
       param="GpuOnLanEnabled",
