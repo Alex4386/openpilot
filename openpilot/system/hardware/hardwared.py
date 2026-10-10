@@ -28,6 +28,7 @@ from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.monitoring import chestnut_state_thread
+from openpilot.system.hardware import usb_network
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
 
@@ -532,6 +533,9 @@ def main():
   if COMMA_HARDWARE:
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
+    if Params().get_bool("UsbNetworkEnabled"):
+      # AGNOS rebuilds the USB gadget every boot; re-add the network function (one-shot)
+      threading.Thread(target=usb_network.up, daemon=True).start()
 
   for t in threads:
     t.start()
