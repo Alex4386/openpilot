@@ -37,6 +37,7 @@ from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_drivi
 from openpilot.common.file_chunker import open_file_chunked
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present, chestnut_compiled, modeld_pkl_path, load_oob
+from openpilot.selfdrive.modeld.gpu_on_lan import GpuOnLan
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
@@ -188,7 +189,8 @@ class ModelState(ModelStateBase):
     return {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
-          inputs: dict[str, np.ndarray], after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
+          inputs: dict[str, np.ndarray], after_enqueue: Callable[[], None] | None = None,
+          after_warp: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
     for i, key in enumerate(self.vision_input_names):
       np.copyto(self.frames[i], np.frombuffer(bufs[key].data, dtype=np.uint8, count=self.frame_copy_size))
       self.npy['tfm'][i] = transforms[key]
@@ -202,6 +204,8 @@ class ModelState(ModelStateBase):
 
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
+    if after_warp is not None:
+      after_warp()
     self.run_model(output_buffers=self.outputs, **self.input_queues)
     if after_enqueue is not None:
       after_enqueue()
@@ -294,6 +298,10 @@ def main(demo=False):
   publish_state = PublishState()
   params = Params()
   chestnut_state = ChestnutGpuState(pm, model.chestnut) if CHESTNUT else None
+  gpu_on_lan = None
+  if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
+    gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on a USB-C cable
+  gpu_on_lan_active = False
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -405,7 +413,12 @@ def main(demo=False):
     try:
       send_chestnut = (chestnut_state is not None and
                        run_count % round(ModelConstants.MODEL_RUN_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0)
-      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None)
+      gpu_on_lan_submit = None
+      if gpu_on_lan is not None:
+        # send this frame's warp to the LAN server, so it runs alongside the local model
+        gpu_on_lan_submit = lambda m=model: gpu_on_lan.submit(m.input_queues['new_img'].numpy(), m.npy['desire'],  # noqa: E731
+                                                              m.npy['traffic_convention'], m.npy['action_t'])
+      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_submit)
     except Exception:
       if not params.get_bool("ChestnutActive"):
         raise
@@ -418,6 +431,16 @@ def main(demo=False):
         chestnut_state.big = False
       run_count = 0
       model_output = None
+
+    big_on_lan = False
+    if gpu_on_lan is not None and model_output is not None:
+      lan_output = gpu_on_lan.collect()
+      if lan_output is not None and gpu_on_lan.output_slices is not None:
+        model_output = model.parser.parse_outputs(model.slice_outputs(lan_output, gpu_on_lan.output_slices))
+        big_on_lan = True
+      if big_on_lan != gpu_on_lan_active:
+        gpu_on_lan_active = big_on_lan
+        params.put_bool("GpuOnLanActive", gpu_on_lan_active)
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
@@ -432,7 +455,7 @@ def main(demo=False):
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
-      modelv2_send.modelV2.big = model.chestnut
+      modelv2_send.modelV2.big = model.chestnut or big_on_lan
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
