@@ -33,7 +33,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware import usb_network
 
 DEFAULT_PORT = 8000  # KServe / Triton HTTP default
-USB_TARGET = "usb"  # server is whatever is on the other end of a USB-C cable (see usb_network)
+USB_TARGET = "usb"  # server is whatever is on the other end of the USB Ethernet link (see usb_network)
 MODEL_NAME = "driving_policy"
 BUDGET_S = 0.040  # submit -> collect; warp + this + publishing must fit the 50ms frame
 RECONNECT_INTERVAL_S = 2.0
