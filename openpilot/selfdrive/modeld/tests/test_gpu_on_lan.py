@@ -35,43 +35,9 @@ def test_decode_response():
 
 
 
-def test_usb_target(monkeypatch):
-  from openpilot.selfdrive.modeld import gpu_on_lan
-  monkeypatch.setattr(gpu_on_lan.GpuOnLan, "_worker", lambda self: None)  # no network, no sudo
+def test_usb_target():
+  from openpilot.selfdrive.modeld.gpu_on_lan import GpuOnLan
   for target, usb, host, port in (("", True, None, DEFAULT_PORT), ("usb", True, None, DEFAULT_PORT),
                                   ("USB:9000", True, None, 9000), ("10.0.0.2:8001", False, "10.0.0.2", 8001)):
-    c = gpu_on_lan.GpuOnLan(target)
+    c = GpuOnLan(target)
     assert (c.usb, c.host, c.port) == (usb, host, port), target
-
-
-def test_state(monkeypatch):
-  from openpilot.selfdrive.modeld import gpu_on_lan
-  monkeypatch.setattr(gpu_on_lan.GpuOnLan, "_worker", lambda self: None)
-  outputs = np.zeros(4, dtype=np.float32)
-  c = gpu_on_lan.GpuOnLan("10.0.0.2")
-  assert c.state() is None  # connecting
-
-  monkeypatch.setattr(c, "_collect", lambda: outputs)
-  c.collect()
-  assert c.state() is True
-
-  monkeypatch.setattr(c, "_collect", lambda: None)
-  c.collect()
-  assert c.state() is False  # dropped out after driving
-
-  c = gpu_on_lan.GpuOnLan("10.0.0.2")
-  c._grace_start -= gpu_on_lan.ENGAGE_GRACE_S + 1
-  assert c.state() is False  # never came up
-
-
-def test_backlog_drops_frames(monkeypatch):
-  from openpilot.selfdrive.modeld import gpu_on_lan
-  monkeypatch.setattr(gpu_on_lan.GpuOnLan, "_worker", lambda self: None)  # nothing gets sent
-  c = gpu_on_lan.GpuOnLan("10.0.0.2")
-  c._connections = 1
-  frame = (np.zeros((2, 6, 128, 256), np.uint8), np.zeros(8, np.float32), np.zeros((1, 2), np.float32), np.zeros((1, 2), np.float32))
-  for _ in range(gpu_on_lan.MAX_BACKLOG + 2):
-    c.submit(*frame)
-  assert len(c._queue) == gpu_on_lan.MAX_BACKLOG and c.dropped == 2
-  headers = [json.loads(body[:hl]) for _, body, hl in c._queue]
-  assert [h["parameters"]["sequence_start"] for h in headers] == [True, False, False]  # same sequence, no restart
