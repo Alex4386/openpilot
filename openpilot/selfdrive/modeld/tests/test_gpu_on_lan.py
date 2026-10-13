@@ -64,21 +64,14 @@ def test_state(monkeypatch):
   assert c.state() is False  # never came up
 
 
-def test_backlog_restarts_sequence(monkeypatch):
+def test_backlog_drops_frames(monkeypatch):
   from openpilot.selfdrive.modeld import gpu_on_lan
   monkeypatch.setattr(gpu_on_lan.GpuOnLan, "_worker", lambda self: None)  # nothing gets sent
   c = gpu_on_lan.GpuOnLan("10.0.0.2")
-  c._connected = True
+  c._connections = 1
   frame = (np.zeros((2, 6, 128, 256), np.uint8), np.zeros(8, np.float32), np.zeros((1, 2), np.float32), np.zeros((1, 2), np.float32))
-  for _ in range(gpu_on_lan.MAX_BACKLOG):
+  for _ in range(gpu_on_lan.MAX_BACKLOG + 2):
     c.submit(*frame)
-  assert len(c._queue) == gpu_on_lan.MAX_BACKLOG and c.restarts == 0
-  first = json.loads(c._queue[0][1][:c._queue[0][2]])
-  assert first["parameters"]["sequence_start"] and not json.loads(c._queue[1][1][:c._queue[1][2]])["parameters"]["sequence_start"]
-
-  c.submit(*frame)  # one too many: start over instead of skipping a frame
-  assert c.restarts == 1 and len(c._queue) == 1
-  restarted = json.loads(c._queue[0][1][:c._queue[0][2]])
-  assert restarted["parameters"]["sequence_start"]
-  assert restarted["parameters"]["sequence_id"] != first["parameters"]["sequence_id"]
-  assert int(restarted["id"]) > int(first["id"])  # ids never reused
+  assert len(c._queue) == gpu_on_lan.MAX_BACKLOG and c.dropped == 2
+  headers = [json.loads(body[:hl]) for _, body, hl in c._queue]
+  assert [h["parameters"]["sequence_start"] for h in headers] == [True, False, False]  # same sequence, no restart
