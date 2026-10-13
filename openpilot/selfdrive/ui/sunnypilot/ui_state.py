@@ -87,8 +87,7 @@ class UIStateSP:
     self._update_lan_gpu_state()
 
   def _update_lan_gpu_state(self) -> None:
-    # only stock modeld talks to the server, a tinygrad bundle runs modeld_v2
-    if not self.lan_gpu_enabled or self.chestnut_present or self.model_runner_tinygrad:
+    if not self.lan_gpu_enabled or self.chestnut_present:
       self.lan_gpu_state = LanGpuState.DISABLED
     elif not self.started:
       self.lan_gpu_state = LanGpuState.READY

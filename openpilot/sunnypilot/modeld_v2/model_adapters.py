@@ -210,9 +210,11 @@ class NativeTinygradAdapter(BaseModelAdapter):
     for key in self.state_pairs:
       self.input_queues[key].assign(0).realize()
 
-  def run(self):
+  def run(self, after_warp=None):
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
+    if after_warp is not None:
+      after_warp()
     self.run_model(output_buffers=self.outputs, **self.input_queues)
     return self.outputs['outputs']
 

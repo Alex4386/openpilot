@@ -33,6 +33,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
+from openpilot.selfdrive.modeld.gpu_on_lan import GpuOnLan
 from openpilot.selfdrive.modeld.modeld import ChestnutGpuState
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
@@ -158,7 +159,8 @@ class ModelState(ModelStateBase):
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray],
-          after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+          after_enqueue: Callable[[], None] | None = None,
+          after_warp: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
     self.adapter.copy_frames(bufs)
 
     desire_key = self.desire_key
@@ -179,7 +181,7 @@ class ModelState(ModelStateBase):
       self.numpy_inputs['tfm'][:, :] = transforms[self._road_key].reshape(3, 3)
       self.numpy_inputs['big_tfm'][:, :] = transforms[self._wide_key].reshape(3, 3)
 
-    raw_outputs = self.adapter.run()
+    raw_outputs = self.adapter.run(after_warp) if self.adapter.is_native else self.adapter.run()
 
     if after_enqueue is not None:
       after_enqueue()
@@ -321,6 +323,14 @@ def main(demo=False):
 
   publish_state = PublishState()
   chestnut_state = ChestnutGpuState(pm, model.chestnut) if CHESTNUT else None
+  gpu_on_lan = None
+  if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
+    if model.adapter.is_native:
+      gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on a USB-C cable
+    else:
+      # a legacy model warps inside its policy: there's no new_img to send
+      cloudlog.warning("gpu on lan: not supported with this model")
+      params.put_bool("GpuOnLanActive", False)
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
@@ -443,7 +453,14 @@ def main(demo=False):
     try:
       send_chestnut = (chestnut_state is not None and
                        run_count % round(model.constants.MODEL_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0)
-      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None)
+      gpu_on_lan_submit = None
+      if gpu_on_lan is not None:
+        # send this frame's warp to the LAN server, so it runs alongside the local model
+        action_t = np.array([lat_action_t, long_action_t], dtype=np.float32)  # the server model takes it, the local one may not
+        gpu_on_lan_submit = lambda m=model, tc=traffic_convention, at=action_t: gpu_on_lan.submit(  # noqa: E731
+          m.adapter.input_queues['new_img'].numpy(), m.numpy_inputs[m.desire_key], m.numpy_inputs.get('traffic_convention', tc),
+          m.numpy_inputs.get('action_t', at))
+      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_submit)
     except Exception:
       if not params.get_bool("ChestnutActive"):
         raise
@@ -455,6 +472,13 @@ def main(demo=False):
         chestnut_state.big = False
       run_count = 0
       model_output = None
+    big_on_lan = False
+    if gpu_on_lan is not None and model_output is not None:
+      lan_output = gpu_on_lan.collect()
+      if lan_output is not None and gpu_on_lan.output_slices is not None:
+        model_output = model.parser.parse_outputs({k: lan_output[np.newaxis, v] for k, v in gpu_on_lan.output_slices.items()})
+        big_on_lan = True
+      gpu_on_lan.publish(params)
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
@@ -469,7 +493,7 @@ def main(demo=False):
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, live_calib_seen, meta_constants)
-      modelv2_send.modelV2.big = model.chestnut
+      modelv2_send.modelV2.big = model.chestnut or big_on_lan
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
