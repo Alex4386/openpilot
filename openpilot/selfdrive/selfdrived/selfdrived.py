@@ -190,7 +190,7 @@ class SelfdriveD:
       self.events.add(EventName.joystickDebug)
       self.startup_event = None
 
-    loading = self.params.get_bool("ChestnutLoading")
+    loading = self.params.get_bool("ChestnutLoading") or self.params.get_bool("GpuOnLanLoading")
     if self.big_model_loading and not loading:
       self.big_model_ready_t = time.monotonic()
       self.events_sp.add(custom.OnroadEventSP.EventName.bigModelReady)
@@ -200,6 +200,9 @@ class SelfdriveD:
 
     big_active = self.params.get("ChestnutActive")
     chestnut_present = self.sm['deviceState'].chestnutPresent
+    if big_active is None:  # the big model on a computer on the network (lan gpu) instead, same rules
+      big_active = self.params.get("GpuOnLanActive")
+      chestnut_present = big_active is not None
     model_unavailable = big_active is True and self.sm.seen['modelV2'] and not self.sm.alive['modelV2']
     big_failed = big_active is False or model_unavailable or (self.big_model_active and not chestnut_present)
     if big_failed and not self.big_model_failed:

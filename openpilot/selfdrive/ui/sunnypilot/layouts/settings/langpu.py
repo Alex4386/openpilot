@@ -31,7 +31,7 @@ class LanGpuLayout(Widget):
     self._enabled = toggle_item_sp(
       title=lambda: tr("lan gpu"),
       description=lambda: tr("Run the big driving model on a computer on the network, e.g. a Mac running Bamyanggang. " +
-                             "The on-device model keeps running and is used whenever the server is slow or unreachable. " +
+                             "Works like a chestnut: if the server fails, the on-device model drives until the next drive. " +
                              "Takes effect on the next drive."),
       param="GpuOnLanEnabled",
     )

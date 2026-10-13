@@ -247,6 +247,9 @@ def main(demo=False):
   params = Params()
   params.put_bool("ChestnutLoading", CHESTNUT)
   params.remove("ChestnutActive")
+  LAN = not CHESTNUT and params.get_bool("GpuOnLanEnabled")  # the big model on a computer on the network
+  params.put_bool("GpuOnLanLoading", LAN)
+  params.remove("GpuOnLanActive")
 
   gc.disable()
 
@@ -318,8 +321,15 @@ def main(demo=False):
   params = Params()
   chestnut_state = ChestnutGpuState(pm, model.chestnut) if CHESTNUT else None
   gpu_on_lan = None
-  if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
+  if LAN:
+    # loads like the chestnut: Big Model Loading until the server answers, the on-device model if it doesn't
     gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on the USB Ethernet link
+    if not gpu_on_lan.connect(BIG_MODEL_TIMEOUT):
+      gpu_on_lan = None
+    params.put_bool("GpuOnLanActive", gpu_on_lan is not None)
+    if gpu_on_lan is not None and gpu_on_lan.model_name:
+      params.put("GpuOnLanModel", gpu_on_lan.model_name)
+    params.put_bool("GpuOnLanLoading", False)
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -434,8 +444,8 @@ def main(demo=False):
       gpu_on_lan_submit = None
       if gpu_on_lan is not None:
         # send this frame's warp to the LAN server, so it runs alongside the local model
-        gpu_on_lan_submit = lambda m=model: gpu_on_lan.submit(m.input_queues['new_img'].numpy(), m.npy['desire'],  # noqa: E731
-                                                              m.npy['traffic_convention'], m.npy['action_t'])
+        gpu_on_lan_submit = lambda m=model, g=gpu_on_lan: g.submit(m.input_queues['new_img'].numpy(), m.npy['desire'],  # noqa: E731
+                                                                   m.npy['traffic_convention'], m.npy['action_t'])
       model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_submit)
     except Exception:
       if not model.chestnut:
@@ -452,11 +462,15 @@ def main(demo=False):
 
     big_on_lan = False
     if gpu_on_lan is not None and model_output is not None:
-      lan_output = gpu_on_lan.collect()
-      if lan_output is not None and gpu_on_lan.output_slices is not None:
-        model_output = model.parser.parse_outputs(model.slice_outputs(lan_output, gpu_on_lan.output_slices))
+      try:
+        assert gpu_on_lan.output_slices is not None
+        model_output = model.parser.parse_outputs(model.slice_outputs(gpu_on_lan.result(), gpu_on_lan.output_slices))
         big_on_lan = True
-      gpu_on_lan.publish(params)
+      except Exception:
+        # like a chestnut failure: the on-device model drives for the rest of the drive (Big Model Failed)
+        cloudlog.exception("gpu on lan failed, fall back to small")
+        params.put_bool("GpuOnLanActive", False)
+        gpu_on_lan = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
