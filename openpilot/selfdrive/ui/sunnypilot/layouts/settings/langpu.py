@@ -47,7 +47,8 @@ class LanGpuLayout(Widget):
 
     self._usb_network = toggle_item_sp(
       title=lambda: tr("USB Network"),
-      description=lambda: tr("Connect the computer with a USB-C to USB-C cable to get a local network between it and the device."),
+      description=lambda: tr("Plug a USB Ethernet adapter into the device and connect it to the computer with an Ethernet cable " +
+                             "to get a wired network between them."),
       param="UsbNetworkEnabled",
       callback=lambda on: threading.Thread(target=usb_network.up if on else usb_network.down, daemon=True).start(),
     )
@@ -66,7 +67,7 @@ class LanGpuLayout(Widget):
   def _server_label(self) -> str:
     if host := ui_state.params.get("GpuOnLanHost"):
       return host
-    return f"USB · {self._usb_peer}" if self._usb_peer else tr("USB cable")
+    return f"USB · {self._usb_peer}" if self._usb_peer else tr("USB Ethernet")
 
   def _update_state(self):
     super()._update_state()

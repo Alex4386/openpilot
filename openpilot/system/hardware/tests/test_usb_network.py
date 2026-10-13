@@ -1,28 +1,6 @@
-import os
-
-import pytest
+import ipaddress
 
 from openpilot.system.hardware import usb_network
-
-
-def make_gadget(root, functions):
-  gadget = root / "g1"
-  config = gadget / "configs" / "b.1"
-  config.mkdir(parents=True)
-  (gadget / "UDC").write_text("a600000.dwc3\n")
-  for name, ifname in functions.items():
-    (gadget / "functions" / name).mkdir(parents=True)
-    if ifname:
-      (gadget / "functions" / name / "ifname").write_text(ifname + "\n")
-    os.symlink(gadget / "functions" / name, config / name)
-  return gadget
-
-
-@pytest.fixture
-def configfs(tmp_path, monkeypatch):
-  monkeypatch.setattr(usb_network, "GADGET_ROOT", str(tmp_path))
-  monkeypatch.setattr(usb_network, "sudo_read", lambda p: open(p).read().strip() if os.path.exists(p) else "")
-  return tmp_path
 
 
 def test_parse_address():
@@ -32,18 +10,9 @@ def test_parse_address():
     assert usb_network.parse_address(bad) is None, bad
 
 
-def test_uses_existing_ncm_without_touching_gadget(configfs, monkeypatch):
-  make_gadget(configfs, {"ffs.adb": None, "ncm.usb0": "usb0"})
-  monkeypatch.setattr(usb_network, "_rebind", lambda *a: pytest.fail("must not rebind when NCM exists"))
-  assert usb_network._ensure_ncm() == "usb0"
-
-
-def test_prefers_agnos_ncm_over_ours(configfs):
-  make_gadget(configfs, {usb_network.OUR_FUNCTION: "usb1", "ncm.usb0": "usb0"})
-  assert usb_network.interface() == "usb0"
-
-
-def test_remove_leaves_agnos_ncm(configfs, monkeypatch):
-  make_gadget(configfs, {"ncm.usb0": "usb0"})
-  monkeypatch.setattr(usb_network, "_rebind", lambda *a: pytest.fail("nothing of ours to remove"))
-  usb_network._remove_ncm()
+def test_peer_from_leases(tmp_path, monkeypatch):
+  leases = tmp_path / "dnsmasq-eth0.leases"
+  leases.write_text("100 aa:bb 10.47.0.20 mac *\n200 cc:dd 10.47.0.30 mac *\n300 ee:ff 192.168.43.5 phone *\n")
+  monkeypatch.setattr(usb_network, "configured_address", lambda: ipaddress.IPv4Interface("10.47.0.1/24"))
+  monkeypatch.setattr(usb_network.glob, "glob", lambda _: [str(leases)])
+  assert usb_network.peer_address() == "10.47.0.30"  # newest on our subnet, not the hotspot's

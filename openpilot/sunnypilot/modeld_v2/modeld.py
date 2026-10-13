@@ -326,7 +326,7 @@ def main(demo=False):
   gpu_on_lan = None
   if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
     if model.adapter.is_native:
-      gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on a USB-C cable
+      gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on the USB Ethernet link
     else:
       # a legacy model warps inside its policy: there's no new_img to send
       cloudlog.warning("gpu on lan: not supported with this model")
