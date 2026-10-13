@@ -8,16 +8,15 @@ traffic_convention, action_t); the server keeps the state_* tensors, like Triton
 sequence state.
 
 modeld uses it the way it uses the chestnut: it connects while modeld starts (Big Model
-Loading), then the big model drives every frame, and modeld waits for it. A slow server means
-dropped camera frames (Driving Model Lagging); an error or a stall makes modeld fall back to
-the on-device model for the rest of the drive (Big Model Failed). The request goes out right
-after the warp, so the on-device model runs meanwhile and is warm if it has to take over.
+Loading), then the big model drives every frame instead of the on-device one: modeld warps the
+frame, sends it and waits. A slow server means dropped camera frames (Driving Model Lagging); an
+error or a stall makes modeld fall back to the on-device model for the rest of the drive (Big
+Model Failed).
 """
 import http.client
 import json
 import random
 import socket
-import threading
 import time
 
 import numpy as np
@@ -75,8 +74,6 @@ class GpuOnLan:
     self._conn: http.client.HTTPConnection | None = None
     self._seq = 0
     self._sequence_id = random.getrandbits(63)
-    self._request: threading.Thread | None = None
-    self._result: np.ndarray | Exception | None = None
 
   def connect(self, timeout: float) -> bool:
     """Blocks until the server answers with its model (it loads and warms it up before it listens), or timeout."""
@@ -91,52 +88,34 @@ class GpuOnLan:
           return False
         time.sleep(CONNECT_RETRY_S)
 
-  def submit(self, new_img: np.ndarray, desire: np.ndarray, traffic_convention: np.ndarray, action_t: np.ndarray) -> None:
-    """Right after the warp: sends this frame, the on-device model runs while it's in flight."""
+  def infer(self, new_img: np.ndarray, desire: np.ndarray, traffic_convention: np.ndarray, action_t: np.ndarray) -> np.ndarray:
+    """The big model's raw outputs for this frame (slice with output_slices). Raises if the server
+    fails or stalls for TIMEOUT_S."""
+    assert self._conn is not None
     tensors = {
       "new_img": new_img,
       "desire": desire.astype(np.float32),
       "traffic_convention": traffic_convention.astype(np.float32),
       "action_t": action_t.astype(np.float32),
     }
-    self._result = None
-    self._request = threading.Thread(target=self._infer, args=(self._seq, tensors), daemon=True)
-    self._request.start()
+    # a model bundle may lay out the same inputs differently, e.g. desire (1, 8) vs (8,)
+    for name, shape in self._input_shapes.items():
+      if name in tensors:
+        tensors[name] = tensors[name].reshape(shape)
+    body, header_len = encode_infer_request(self._seq, self._sequence_id, self._seq == 0, tensors)
     self._seq += 1
-
-  def result(self) -> np.ndarray:
-    """The big model's raw outputs for the submitted frame. Raises if the server fails or stalls."""
-    assert self._request is not None, "nothing submitted"
-    self._request.join(TIMEOUT_S)
-    if self._request.is_alive():
-      raise TimeoutError(f"gpu on lan: no result in {TIMEOUT_S:.0f}s")
-    if isinstance(self._result, Exception):
-      raise self._result
-    assert self._result is not None
-    if not np.all(np.isfinite(self._result)):
+    self._conn.request("POST", f"/v2/models/{MODEL_NAME}/infer", body=body, headers={
+      "Content-Type": "application/octet-stream",
+      "Inference-Header-Content-Length": str(header_len),
+    })
+    resp = self._conn.getresponse()
+    data = resp.read()
+    if resp.status != 200:
+      raise ConnectionError(f"gpu on lan: infer failed: {resp.status} {data[:200]!r}")
+    outputs = decode_infer_response(data, int(resp.getheader("Inference-Header-Content-Length")))[1]
+    if not np.all(np.isfinite(outputs)):
       raise RuntimeError("gpu on lan: model output not finite")
-    return self._result
-
-  def _infer(self, seq: int, tensors: dict[str, np.ndarray]) -> None:
-    """Any failure ends up in result(), never in modeld's warp."""
-    try:
-      # a model bundle may lay out the same inputs differently, e.g. desire (1, 8) vs (8,)
-      for name, shape in self._input_shapes.items():
-        if name in tensors:
-          tensors[name] = tensors[name].reshape(shape)
-      body, header_len = encode_infer_request(seq, self._sequence_id, seq == 0, tensors)
-      assert self._conn is not None
-      self._conn.request("POST", f"/v2/models/{MODEL_NAME}/infer", body=body, headers={
-        "Content-Type": "application/octet-stream",
-        "Inference-Header-Content-Length": str(header_len),
-      })
-      resp = self._conn.getresponse()
-      data = resp.read()
-      if resp.status != 200:
-        raise ConnectionError(f"infer failed: {resp.status} {data[:200]!r}")
-      self._result = decode_infer_response(data, int(resp.getheader("Inference-Header-Content-Length")))[1]
-    except Exception as e:
-      self._result = e
+    return outputs
 
   def _resolve(self) -> str:
     if self.host is not None and not self.usb:
