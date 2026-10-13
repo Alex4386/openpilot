@@ -60,7 +60,8 @@ def decode_infer_response(body: bytes, header_len: int) -> tuple[dict, np.ndarra
   header = json.loads(body[:header_len])
   out = next(o for o in header["outputs"] if o["name"] == "outputs")
   size = out["parameters"]["binary_data_size"]
-  return header, np.frombuffer(body, dtype=np.float32, count=size // 4, offset=header_len)
+  # a copy: the parser works in place, and frombuffer over bytes is read-only
+  return header, np.frombuffer(body, dtype=np.float32, count=size // 4, offset=header_len).copy()
 
 
 class GpuOnLan:
