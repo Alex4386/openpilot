@@ -160,7 +160,7 @@ class ModelState(ModelStateBase):
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray],
           after_enqueue: Callable[[], None] | None = None,
-          after_warp: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+          remote: Callable[[], tuple[np.ndarray, dict[str, slice]]] | None = None) -> dict[str, np.ndarray] | None:
     self.adapter.copy_frames(bufs)
 
     desire_key = self.desire_key
@@ -181,42 +181,47 @@ class ModelState(ModelStateBase):
       self.numpy_inputs['tfm'][:, :] = transforms[self._road_key].reshape(3, 3)
       self.numpy_inputs['big_tfm'][:, :] = transforms[self._wide_key].reshape(3, 3)
 
-    raw_outputs = self.adapter.run(after_warp) if self.adapter.is_native else self.adapter.run()
-
-    if after_enqueue is not None:
-      after_enqueue()
-
-    if self._combined_model_type == 'supercombo':
-      model_output = raw_outputs.numpy().flatten()
-      if self.chestnut and not np.all(np.isfinite(model_output)):
-        raise RuntimeError("model output not finite")
-      sliced = {k: model_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
-      outputs = self.parser.parse_outputs(sliced)
-      if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
-        (self.numpy_inputs['prev_feat'].flat if self.adapter.is_native else self.numpy_inputs['prev_feat'])[:] = \
-          model_output[self.vision_output_slices['hidden_state']]
+    if remote is not None:
+      # the big model on a computer on the network drives instead of this one (lan gpu); native models only
+      raw, slices = self.adapter.run(remote)
+      outputs = self.parser.parse_outputs({k: raw[np.newaxis, v] for k, v in slices.items()})
     else:
-      vision_output = raw_outputs[0].numpy().flatten()
-      vision_sliced = {k: vision_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
-      outputs = self.parser.parse_vision_outputs(vision_sliced)
+      raw_outputs = self.adapter.run()
 
-      if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
-        (self.numpy_inputs['prev_feat'].flat if self.adapter.is_native else self.numpy_inputs['prev_feat'])[:] = \
-          vision_output[self.vision_output_slices['hidden_state']]
+      if after_enqueue is not None:
+        after_enqueue()
 
-      for i, policy_slices in enumerate(self._policy_slices_list):
-        policy_output = raw_outputs[i + 1].numpy().flatten()
-        policy_sliced = {k: policy_output[np.newaxis, v] for k, v in policy_slices.items()}
-        parsed = self.parser.parse_policy_outputs(policy_sliced)
-        if 'off' in self._policy_keys[i] and self._has_on_policy:
-          for key in ('plan', 'planplus', 'action'):
-            if any(key in self._policy_slices_list[j] for j, k in enumerate(self._policy_keys) if 'on' in k.lower()):
-              parsed.pop(key, None)
+      if self._combined_model_type == 'supercombo':
+        model_output = raw_outputs.numpy().flatten()
+        if self.chestnut and not np.all(np.isfinite(model_output)):
+          raise RuntimeError("model output not finite")
+        sliced = {k: model_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
+        outputs = self.parser.parse_outputs(sliced)
+        if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
+          (self.numpy_inputs['prev_feat'].flat if self.adapter.is_native else self.numpy_inputs['prev_feat'])[:] = \
+            model_output[self.vision_output_slices['hidden_state']]
+      else:
+        vision_output = raw_outputs[0].numpy().flatten()
+        vision_sliced = {k: vision_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
+        outputs = self.parser.parse_vision_outputs(vision_sliced)
 
-        outputs.update(parsed)
+        if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
+          (self.numpy_inputs['prev_feat'].flat if self.adapter.is_native else self.numpy_inputs['prev_feat'])[:] = \
+            vision_output[self.vision_output_slices['hidden_state']]
 
-      if 'planplus' in outputs and 'plan' in outputs:
-        outputs['plan'] = outputs['plan'] + outputs['planplus']
+        for i, policy_slices in enumerate(self._policy_slices_list):
+          policy_output = raw_outputs[i + 1].numpy().flatten()
+          policy_sliced = {k: policy_output[np.newaxis, v] for k, v in policy_slices.items()}
+          parsed = self.parser.parse_policy_outputs(policy_sliced)
+          if 'off' in self._policy_keys[i] and self._has_on_policy:
+            for key in ('plan', 'planplus', 'action'):
+              if any(key in self._policy_slices_list[j] for j, k in enumerate(self._policy_keys) if 'on' in k.lower()):
+                parsed.pop(key, None)
+
+          outputs.update(parsed)
+
+        if 'planplus' in outputs and 'plan' in outputs:
+          outputs['plan'] = outputs['plan'] + outputs['planplus']
 
     if 'desired_curvature' in outputs and 'prev_desired_curv' in self.numpy_inputs:
       buf = self.numpy_inputs['prev_desired_curv']
@@ -461,37 +466,33 @@ def main(demo=False):
     try:
       send_chestnut = (chestnut_state is not None and
                        run_count % round(model.constants.MODEL_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0)
-      gpu_on_lan_submit = None
+      gpu_on_lan_remote = None
       if gpu_on_lan is not None:
-        # send this frame's warp to the LAN server, so it runs alongside the local model
         action_t = np.array([lat_action_t, long_action_t], dtype=np.float32)  # the server model takes it, the local one may not
-        gpu_on_lan_submit = lambda m=model, g=gpu_on_lan, tc=traffic_convention, at=action_t: g.submit(  # noqa: E731
+        gpu_on_lan_remote = lambda m=model, g=gpu_on_lan, tc=traffic_convention, at=action_t: (g.infer(  # noqa: E731
           m.adapter.input_queues['new_img'].numpy(), m.numpy_inputs[m.desire_key], m.numpy_inputs.get('traffic_convention', tc),
-          m.numpy_inputs.get('action_t', at))
-      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_submit)
+          m.numpy_inputs.get('action_t', at)), g.output_slices)
+      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_remote)
+      big_on_lan = gpu_on_lan_remote is not None
     except Exception:
-      if not params.get_bool("ChestnutActive"):
-        raise
-      cloudlog.exception("big model failed, fall back to small")
-      params.put_bool("ChestnutActive", False)
-      assert small_model is not None
-      model = small_model
-      if chestnut_state is not None:
-        chestnut_state.big = False
-      run_count = 0
-      model_output = None
-    big_on_lan = False
-    if gpu_on_lan is not None and model_output is not None:
-      try:
-        assert gpu_on_lan.output_slices is not None
-        lan_output = gpu_on_lan.result()
-        model_output = model.parser.parse_outputs({k: lan_output[np.newaxis, v] for k, v in gpu_on_lan.output_slices.items()})
-        big_on_lan = True
-      except Exception:
+      big_on_lan = False
+      if gpu_on_lan is not None:
         # like a chestnut failure: the on-device model drives for the rest of the drive (Big Model Failed)
         cloudlog.exception("gpu on lan failed, fall back to small")
         params.put_bool("GpuOnLanActive", False)
         gpu_on_lan = None
+        model_output = None
+      else:
+        if not params.get_bool("ChestnutActive"):
+          raise
+        cloudlog.exception("big model failed, fall back to small")
+        params.put_bool("ChestnutActive", False)
+        assert small_model is not None
+        model = small_model
+        if chestnut_state is not None:
+          chestnut_state.big = False
+        run_count = 0
+        model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
