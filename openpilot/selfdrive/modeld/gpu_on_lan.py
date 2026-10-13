@@ -93,6 +93,9 @@ class GpuOnLan:
     self._sequence_id = 0
     self._start = True  # the next frame starts a new sequence (server state reset)
     self.dropped = 0  # frames not sent because the server was behind
+    self.reason = "connecting"  # why the big model is or isn't driving this frame, logged on change
+    self._logged_reason = ""
+    self._logged_time = 0.
     self._connections = 0  # workers with a live connection
     self._healthy = 0
     self._engaged = False  # the last collect() returned outputs
@@ -123,10 +126,12 @@ class GpuOnLan:
     self._submitted = None
     with self._cv:
       if not self._connected:
+        self.reason = "not connected"
         return
       if len(self._queue) >= MAX_BACKLOG:
         self.dropped += 1
         self._healthy = 0
+        self.reason = f"server {MAX_BACKLOG} frames behind, dropping frames"
         return
       tensors = {
         "new_img": new_img,
@@ -176,6 +181,9 @@ class GpuOnLan:
     outputs = self._collect()
     self._engaged = outputs is not None
     self._engaged_once |= self._engaged
+    if self.reason != self._logged_reason and time.monotonic() - self._logged_time > 1.:  # at most once a second
+      cloudlog.warning(f"gpu on lan: big model {'driving' if self._engaged else 'not used'}: {self.reason}")
+      self._logged_reason, self._logged_time = self.reason, time.monotonic()
     return outputs
 
   def _collect(self) -> np.ndarray | None:
@@ -189,14 +197,20 @@ class GpuOnLan:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not self._connected:
           self._healthy = 0
+          self.reason = f"late, no result within {BUDGET_S * 1e3:.0f} ms" if self._connected else "connection lost"
           return None
         self._cv.wait(remaining)
       outputs, warm = self._results[seq]
     if outputs is None or not warm or not np.all(np.isfinite(outputs)):
       self._healthy = 0
+      self.reason = "request failed" if outputs is None else "server model warming up" if not warm else "non-finite output"
       return None
     self._healthy += 1
-    return outputs if self._healthy >= HEALTHY_FRAMES_TO_ENGAGE else None
+    if self._healthy < HEALTHY_FRAMES_TO_ENGAGE:
+      self.reason = f"on time, waiting for {HEALTHY_FRAMES_TO_ENGAGE} in a row"
+      return None
+    self.reason = "on time"
+    return outputs
 
   def _resolve(self) -> str:
     if self.host is not None and not self.usb:
