@@ -10,7 +10,12 @@ sequence state.
 modeld submits right after the camera warp and collects after the local model finishes, so
 the remote model runs in parallel with the local one. The local model always runs; a slow or
 missing server just means its output is used for that frame.
+
+Every frame goes to the server, in order, even when its result will be too late to use: the
+model's temporal state is built at 20Hz, so a skipped frame corrupts its history. When the
+server falls behind by more than MAX_BACKLOG frames, the sequence restarts (and re-warms).
 """
+import collections
 import http.client
 import json
 import random
@@ -30,6 +35,7 @@ BUDGET_S = 0.040  # submit -> collect; warp + this + publishing must fit the 50m
 RECONNECT_INTERVAL_S = 2.0
 IO_TIMEOUT_S = 1.0  # a stalled server, not a slow frame; slow frames are handled by BUDGET_S
 HEALTHY_FRAMES_TO_ENGAGE = 20  # consecutive on-time warm responses before outputs are used
+MAX_BACKLOG = 3  # frames waiting to be sent; beyond this the server can't keep up at 20Hz
 ENGAGE_GRACE_S = 10.  # connecting + warming the server's history before it counts as failing
 
 
@@ -72,13 +78,14 @@ class GpuOnLan:
     self.output_slices: dict[str, slice] | None = None
     self.model_name: str | None = None  # what the server says it runs, e.g. "Cinque Terre Model v2"
     self._cv = threading.Condition()
-    self._pending: tuple[int, bytes, int] | None = None  # (seq, body, header_len) waiting for the worker
-    self._busy = False
+    self._queue: collections.deque[tuple[int, bytes, int]] = collections.deque()  # (seq, body, header_len) to send
     self._result: tuple[int, np.ndarray | None, bool] | None = None  # (seq, outputs, warm)
     self._submitted: int | None = None
     self._submit_time = 0.
-    self._seq = 0
+    self._seq = 0  # request id, never reused, so a late result can't pass for a newer one
     self._sequence_id = 0
+    self._start = True  # the next frame starts a new sequence (server state reset)
+    self.restarts = 0
     self._connected = False
     self._healthy = 0
     self._engaged = False  # the last collect() returned outputs
@@ -103,22 +110,31 @@ class GpuOnLan:
     """Called right after the warp; never blocks on the network."""
     self._submitted = None
     with self._cv:
-      if not self._connected or self._busy or self._pending is not None:
-        # Previous frame is still in flight: skip this one. The server tolerates gaps, like
-        # the local model tolerates dropped camera frames.
+      if not self._connected:
         return
+      if len(self._queue) >= MAX_BACKLOG:
+        # the server can't keep up; skipping frames would corrupt its history, so start over
+        cloudlog.warning(f"gpu on lan: server {len(self._queue)} frames behind, restarting the sequence")
+        self._restart_sequence()
       tensors = {
         "new_img": new_img,
         "desire": desire.astype(np.float32),
         "traffic_convention": traffic_convention.astype(np.float32),
         "action_t": action_t.astype(np.float32),
       }
-      body, header_len = encode_infer_request(self._seq, self._sequence_id, self._seq == 0, tensors)
-      self._pending = (self._seq, body, header_len)
+      body, header_len = encode_infer_request(self._seq, self._sequence_id, self._start, tensors)
+      self._start = False
+      self._queue.append((self._seq, body, header_len))
       self._submitted = self._seq
       self._submit_time = time.monotonic()
       self._seq += 1
       self._cv.notify_all()
+
+  def _restart_sequence(self) -> None:
+    """Under self._cv."""
+    self._queue.clear()
+    self._sequence_id, self._start, self._healthy = random.getrandbits(63), True, 0
+    self.restarts += 1
 
   def collect(self) -> np.ndarray | None:
     """Raw big model outputs for the last submit if they arrive within budget and are trustworthy."""
@@ -180,7 +196,7 @@ class GpuOnLan:
         try:
           conn = self._connect()
           with self._cv:
-            self._seq, self._sequence_id, self._healthy, self._result = 0, random.getrandbits(63), 0, None
+            self._restart_sequence()
             self._connected = True
             if not self._engaged_once:
               self._grace_start = time.monotonic()  # the server may come up mid-drive
@@ -190,10 +206,9 @@ class GpuOnLan:
           continue
 
       with self._cv:
-        while self._pending is None:
+        while not self._queue:
           self._cv.wait()
-        seq, body, header_len = self._pending
-        self._pending, self._busy = None, True
+        seq, body, header_len = self._queue.popleft()
 
       try:
         conn.request("POST", f"/v2/models/{MODEL_NAME}/infer", body=body, headers={
@@ -212,6 +227,8 @@ class GpuOnLan:
         conn, result = None, (seq, None, False)
 
       with self._cv:
-        self._result, self._busy = result, False
+        self._result = result
         self._connected = conn is not None
+        if conn is None:
+          self._queue.clear()  # a new sequence starts on reconnect
         self._cv.notify_all()
