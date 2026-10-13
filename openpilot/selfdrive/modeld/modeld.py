@@ -320,8 +320,6 @@ def main(demo=False):
   gpu_on_lan = None
   if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
     gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on a USB-C cable
-  gpu_on_lan_state: bool | None = None  # GpuOnLanActive, unset while connecting
-  gpu_on_lan_model: str | None = None
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -458,19 +456,7 @@ def main(demo=False):
       if lan_output is not None and gpu_on_lan.output_slices is not None:
         model_output = model.parser.parse_outputs(model.slice_outputs(lan_output, gpu_on_lan.output_slices))
         big_on_lan = True
-      # for the UI, like ChestnutActive for the chestnut
-      if (lan_state := gpu_on_lan.state()) != gpu_on_lan_state:
-        gpu_on_lan_state = lan_state
-        if lan_state is None:
-          params.remove("GpuOnLanActive")
-        else:
-          params.put_bool("GpuOnLanActive", lan_state)
-      if gpu_on_lan.model_name != gpu_on_lan_model:
-        gpu_on_lan_model = gpu_on_lan.model_name
-        if gpu_on_lan_model:
-          params.put("GpuOnLanModel", gpu_on_lan_model)
-        else:
-          params.remove("GpuOnLanModel")
+      gpu_on_lan.publish(params)
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 

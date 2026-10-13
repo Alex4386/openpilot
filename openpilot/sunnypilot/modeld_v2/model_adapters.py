@@ -18,7 +18,7 @@ from openpilot.sunnypilot.modeld_v2.compile_modeld import (POLICY_INPUTS, derive
 from openpilot.sunnypilot.modeld_v2.stock_dependencies import make_input_queues as stock_make_input_queues, nv12_copy_size
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from tinygrad.device import Buffer
-from tinygrad.dtype import DType
+from tinygrad.dtype import DType, dtypes
 from tinygrad.tensor import Tensor
 from tinygrad.uop.ops import UOp
 
@@ -174,6 +174,8 @@ class NativeTinygradAdapter(BaseModelAdapter):
                          for name, (shape, dtype) in self.input_shapes.items() if name in self.state_pairs}
     shapes = {name: shape for name, (shape, _) in self.input_shapes.items() if name not in self.state_pairs and name != 'new_img'}
     offsets, packed = pack_layout(shapes, self.warp_frame_size)
+    self._input_offsets = offsets
+    self._lan_warp = None
     self.packed_input = np.zeros(packed, dtype=np.uint8)
     self.host = Tensor(self.packed_input, device='NPY')
     self.numpy_inputs = {name: np.ndarray(shape, dtype=np.float32, buffer=self.packed_input, offset=offsets[name])
@@ -196,7 +198,21 @@ class NativeTinygradAdapter(BaseModelAdapter):
     for key in self.state_pairs:
       self.input_queues[key].assign(0).realize()
 
-  def run(self):
+  def warp(self) -> Tensor:
+    # the fused run warps on the device without exposing new_img, so lan gpu runs the warp on its own
+    if self._lan_warp is None:
+      warp_name = f'{"big_" if self.chestnut else ""}driving_warp_{self.cam_w}x{self.cam_h}_tinygrad.pkl'
+      self._lan_warp = load_model(str(Path(BASEDIR) / "openpilot/sunnypilot/modeld_v2/models" / warp_name), cache=False)['run']
+      self._lan_input = Tensor(self.packed_input, device=self.model_device)._buffer()
+      self._lan_warp_inputs = {'input_frame': input_view(self._lan_input, self.frames.shape, dtypes.uint8, self._input_offsets['frames']),
+                               'M_inv': input_view(self._lan_input, (2, 3, 3), dtypes.float32, self._input_offsets['tfm'])}
+    self._lan_input.copy_from(self.host._buffer())
+    return self._lan_warp(**self._lan_warp_inputs)
+
+  def run(self, after_warp=None):
+    if after_warp is not None:
+      self.lan_img = self.warp()
+      after_warp()
     self.run_model(host=self.host, **self.input_queues, output_buffers=self.outputs)
     return self.outputs['outputs']
 

@@ -77,6 +77,8 @@ class GpuOnLan:
     self.host: str | None = None if self.usb else host
     self.output_slices: dict[str, slice] | None = None
     self.model_name: str | None = None  # what the server says it runs, e.g. "Cinque Terre Model v2"
+    self._input_shapes: dict[str, list[int]] = {}  # the server model's, from its metadata
+    self._published: tuple[bool | None, str | None] = (None, None)  # GpuOnLanActive, GpuOnLanModel
     self._cv = threading.Condition()
     self._queue: collections.deque[tuple[int, bytes, int]] = collections.deque()  # (seq, body, header_len) to send
     self._result: tuple[int, np.ndarray | None, bool] | None = None  # (seq, outputs, warm)
@@ -122,6 +124,13 @@ class GpuOnLan:
         "traffic_convention": traffic_convention.astype(np.float32),
         "action_t": action_t.astype(np.float32),
       }
+      # a model bundle may lay out the same inputs differently, e.g. desire (1, 8) vs (8,)
+      for name, shape in self._input_shapes.items():
+        if name in tensors:
+          if tensors[name].size != np.prod(shape):
+            cloudlog.error(f"gpu on lan: {name} {tensors[name].shape} doesn't fit the server model's {shape}")
+            return
+          tensors[name] = tensors[name].reshape(shape)
       body, header_len = encode_infer_request(self._seq, self._sequence_id, self._start, tensors)
       self._start = False
       self._queue.append((self._seq, body, header_len))
@@ -129,6 +138,23 @@ class GpuOnLan:
       self._submit_time = time.monotonic()
       self._seq += 1
       self._cv.notify_all()
+
+  def publish(self, params) -> None:
+    """GpuOnLanActive (unset while connecting) and GpuOnLanModel for the UI, like ChestnutActive."""
+    state = (self.state(), self.model_name)
+    if state == self._published:
+      return
+    if state[0] != self._published[0]:
+      if state[0] is None:
+        params.remove("GpuOnLanActive")
+      else:
+        params.put_bool("GpuOnLanActive", state[0])
+    if state[1] != self._published[1]:
+      if state[1]:
+        params.put("GpuOnLanModel", state[1])
+      else:
+        params.remove("GpuOnLanModel")
+    self._published = state
 
   def _restart_sequence(self) -> None:
     """Under self._cv."""
@@ -185,6 +211,7 @@ class GpuOnLan:
     slices = json.loads(meta["parameters"]["output_slices"])
     self.output_slices = {k: slice(*v) for k, v in slices.items()}
     self.model_name = meta["parameters"].get("model_name")
+    self._input_shapes = {i["name"]: i["shape"] for i in meta.get("inputs", [])}
     conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     cloudlog.warning(f"gpu on lan: connected to {self.host}:{self.port}, model {meta['parameters'].get('model_checkpoint')}")
     return conn
