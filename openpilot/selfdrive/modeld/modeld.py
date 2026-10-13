@@ -196,7 +196,7 @@ class ModelState(ModelStateBase):
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray], after_enqueue: Callable[[], None] | None = None,
-          after_warp: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
+          remote: Callable[[], tuple[np.ndarray, dict[str, slice]]] | None = None) -> dict[str, np.ndarray]:
     for i, key in enumerate(self.vision_input_names):
       np.copyto(self.frames[i], np.frombuffer(bufs[key].data, dtype=np.uint8, count=self.frame_copy_size))
       self.npy['tfm'][i] = transforms[key]
@@ -210,17 +210,19 @@ class ModelState(ModelStateBase):
 
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
-    if after_warp is not None:
-      after_warp()
-    self.run_model(output_buffers=self.outputs, **self.input_queues)
-    if self.chestnut and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
-      raise RuntimeError(f"chestnut failed with {err}")
-    if after_enqueue is not None:
-      after_enqueue()
-    model_output = self.outputs['outputs'].numpy()[0]
-    if self.chestnut and not np.all(np.isfinite(model_output)):
-      raise RuntimeError("model output not finite")
-    outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, self.output_slices))
+    if remote is not None:
+      # the big model on a computer on the network drives instead of this one (lan gpu)
+      model_output, output_slices = remote()
+    else:
+      self.run_model(output_buffers=self.outputs, **self.input_queues)
+      if self.chestnut and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
+        raise RuntimeError(f"chestnut failed with {err}")
+      if after_enqueue is not None:
+        after_enqueue()
+      model_output, output_slices = self.outputs['outputs'].numpy()[0], self.output_slices
+      if self.chestnut and not np.all(np.isfinite(model_output)):
+        raise RuntimeError("model output not finite")
+    outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, output_slices))
 
     if SEND_RAW_PRED:
       outputs_dict['raw_pred'] = model_output.copy()
@@ -441,36 +443,32 @@ def main(demo=False):
     try:
       send_chestnut = (chestnut_state is not None and
                        run_count % round(ModelConstants.MODEL_RUN_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0)
-      gpu_on_lan_submit = None
+      gpu_on_lan_remote = None
       if gpu_on_lan is not None:
-        # send this frame's warp to the LAN server, so it runs alongside the local model
-        gpu_on_lan_submit = lambda m=model, g=gpu_on_lan: g.submit(m.input_queues['new_img'].numpy(), m.npy['desire'],  # noqa: E731
-                                                                   m.npy['traffic_convention'], m.npy['action_t'])
-      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_submit)
+        gpu_on_lan_remote = lambda m=model, g=gpu_on_lan: (g.infer(m.input_queues['new_img'].numpy(), m.npy['desire'],  # noqa: E731
+                                                                   m.npy['traffic_convention'], m.npy['action_t']), g.output_slices)
+      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None, gpu_on_lan_remote)
+      big_on_lan = gpu_on_lan_remote is not None
     except Exception:
-      if not model.chestnut:
-        raise
-      # fallback to small model
-      cloudlog.exception("big model failed, fall back to small")
-      params.put_bool("ChestnutActive", False)
-      assert small_model is not None
-      model = small_model
-      if chestnut_state is not None:
-        chestnut_state.big = False
-      run_count = 0
-      model_output = None
-
-    big_on_lan = False
-    if gpu_on_lan is not None and model_output is not None:
-      try:
-        assert gpu_on_lan.output_slices is not None
-        model_output = model.parser.parse_outputs(model.slice_outputs(gpu_on_lan.result(), gpu_on_lan.output_slices))
-        big_on_lan = True
-      except Exception:
+      big_on_lan = False
+      if gpu_on_lan is not None:
         # like a chestnut failure: the on-device model drives for the rest of the drive (Big Model Failed)
         cloudlog.exception("gpu on lan failed, fall back to small")
         params.put_bool("GpuOnLanActive", False)
         gpu_on_lan = None
+        model_output = None
+      else:
+        if not model.chestnut:
+          raise
+        # fallback to small model
+        cloudlog.exception("big model failed, fall back to small")
+        params.put_bool("ChestnutActive", False)
+        assert small_model is not None
+        model = small_model
+        if chestnut_state is not None:
+          chestnut_state.big = False
+        run_count = 0
+        model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 

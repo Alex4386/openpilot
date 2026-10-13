@@ -209,10 +209,9 @@ class NativeTinygradAdapter(BaseModelAdapter):
     self._lan_input.copy_from(self.host._buffer())
     return self._lan_warp(**self._lan_warp_inputs)
 
-  def run(self, after_warp=None):
-    if after_warp is not None:
-      self.lan_img = self.warp()
-      after_warp()
+  def run(self, remote=None):
+    if remote is not None:
+      return remote()  # the big model on a computer on the network drives instead of this one (lan gpu)
     self.run_model(host=self.host, **self.input_queues, output_buffers=self.outputs)
     return self.outputs['outputs']
 
