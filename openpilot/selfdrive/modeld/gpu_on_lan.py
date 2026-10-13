@@ -35,7 +35,7 @@ from openpilot.system.hardware import usb_network
 DEFAULT_PORT = 8000  # KServe / Triton HTTP default
 USB_TARGET = "usb"  # server is whatever is on the other end of the USB Ethernet link (see usb_network)
 MODEL_NAME = "driving_policy"
-BUDGET_S = 0.040  # submit -> collect; warp + this + publishing must fit the 50ms frame
+BUDGET_S = 0.050  # submit -> collect; past the 50ms frame, modeld drops camera frames (frameDropPerc)
 RECONNECT_INTERVAL_S = 2.0
 IO_TIMEOUT_S = 1.0  # a stalled server, not a slow frame; slow frames are handled by BUDGET_S
 HEALTHY_FRAMES_TO_ENGAGE = 20  # consecutive on-time warm responses before outputs are used
