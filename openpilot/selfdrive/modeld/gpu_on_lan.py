@@ -78,17 +78,28 @@ class GpuOnLan:
     self._result: np.ndarray | Exception | None = None
 
   def connect(self, timeout: float) -> bool:
-    """Blocks until the server answers with its model, or timeout."""
+    """Blocks until the server answers with its model and has run it once, or timeout."""
     deadline = time.monotonic() + timeout
     while True:
       try:
         self._conn = self._connect()
+        self._warmup()
         return True
       except Exception as e:
         if time.monotonic() > deadline:
           cloudlog.exception(f"gpu on lan: no server at {'usb' if self.usb else self.host}:{self.port}: {e}")
           return False
         time.sleep(CONNECT_RETRY_S)
+
+  def _warmup(self) -> None:
+    """One throwaway frame through the whole path, like the chestnut model's warmup() while loading;
+    the real frames then start a fresh sequence."""
+    zeros = {name: np.zeros(shape, dtype=np.uint8 if name == "new_img" else np.float32) for name, shape in self._input_shapes.items()}
+    self._sequence_id = random.getrandbits(63)
+    self._infer(0, zeros)
+    if isinstance(self._result, Exception):
+      raise self._result
+    self._sequence_id = random.getrandbits(63)
 
   def submit(self, new_img: np.ndarray, desire: np.ndarray, traffic_convention: np.ndarray, action_t: np.ndarray) -> None:
     """Right after the warp: sends this frame, the on-device model runs while it's in flight."""
