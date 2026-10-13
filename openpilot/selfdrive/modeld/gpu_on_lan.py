@@ -11,9 +11,13 @@ modeld submits right after the camera warp and collects after the local model fi
 the remote model runs in parallel with the local one. The local model always runs; a slow or
 missing server just means its output is used for that frame.
 
-Every frame goes to the server, in order, even when its result will be too late to use: the
-model's temporal state is built at 20Hz, so a skipped frame corrupts its history. When the
-server falls behind by more than MAX_BACKLOG frames, the sequence restarts (and re-warms).
+Frames go to the server in order. When it falls MAX_BACKLOG frames behind, frames are dropped
+until it catches up, like modeld drops camera frames when a slow (chestnut) model can't keep
+up: the history just has a hole, and outputs aren't used again until HEALTHY_FRAMES_TO_ENGAGE
+on-time frames in a row.
+
+CONNECTIONS requests are in flight at once, so the next frames upload while the server
+computes; the server steps a sequence in id order whatever order they arrive in.
 """
 import collections
 import http.client
@@ -35,7 +39,8 @@ BUDGET_S = 0.040  # submit -> collect; warp + this + publishing must fit the 50m
 RECONNECT_INTERVAL_S = 2.0
 IO_TIMEOUT_S = 1.0  # a stalled server, not a slow frame; slow frames are handled by BUDGET_S
 HEALTHY_FRAMES_TO_ENGAGE = 20  # consecutive on-time warm responses before outputs are used
-MAX_BACKLOG = 3  # frames waiting to be sent; beyond this the server can't keep up at 20Hz
+MAX_BACKLOG = 3  # frames waiting to be sent; beyond this new frames are dropped
+CONNECTIONS = 3  # requests in flight at once
 ENGAGE_GRACE_S = 10.  # connecting + warming the server's history before it counts as failing
 
 
@@ -81,19 +86,24 @@ class GpuOnLan:
     self._published: tuple[bool | None, str | None] = (None, None)  # GpuOnLanActive, GpuOnLanModel
     self._cv = threading.Condition()
     self._queue: collections.deque[tuple[int, bytes, int]] = collections.deque()  # (seq, body, header_len) to send
-    self._result: tuple[int, np.ndarray | None, bool] | None = None  # (seq, outputs, warm)
+    self._results: dict[int, tuple[np.ndarray | None, bool]] = {}  # seq -> (outputs, warm)
     self._submitted: int | None = None
     self._submit_time = 0.
     self._seq = 0  # request id, never reused, so a late result can't pass for a newer one
     self._sequence_id = 0
     self._start = True  # the next frame starts a new sequence (server state reset)
-    self.restarts = 0
-    self._connected = False
+    self.dropped = 0  # frames not sent because the server was behind
+    self._connections = 0  # workers with a live connection
     self._healthy = 0
     self._engaged = False  # the last collect() returned outputs
     self._engaged_once = False
     self._grace_start = time.monotonic()
-    threading.Thread(target=self._worker, daemon=True, name="gpu_on_lan").start()
+    for i in range(CONNECTIONS):
+      threading.Thread(target=self._worker, daemon=True, name=f"gpu_on_lan{i}").start()
+
+  @property
+  def _connected(self) -> bool:
+    return self._connections > 0
 
   @property
   def active(self) -> bool:
@@ -115,9 +125,9 @@ class GpuOnLan:
       if not self._connected:
         return
       if len(self._queue) >= MAX_BACKLOG:
-        # the server can't keep up; skipping frames would corrupt its history, so start over
-        cloudlog.warning(f"gpu on lan: server {len(self._queue)} frames behind, restarting the sequence")
-        self._restart_sequence()
+        self.dropped += 1
+        self._healthy = 0
+        return
       tensors = {
         "new_img": new_img,
         "desire": desire.astype(np.float32),
@@ -157,10 +167,9 @@ class GpuOnLan:
     self._published = state
 
   def _restart_sequence(self) -> None:
-    """Under self._cv."""
+    """A new session on the server, for a fresh connection. Under self._cv."""
     self._queue.clear()
     self._sequence_id, self._start, self._healthy = random.getrandbits(63), True, 0
-    self.restarts += 1
 
   def collect(self) -> np.ndarray | None:
     """Raw big model outputs for the last submit if they arrive within budget and are trustworthy."""
@@ -176,13 +185,13 @@ class GpuOnLan:
       return None
     deadline = self._submit_time + BUDGET_S
     with self._cv:
-      while self._result is None or self._result[0] != seq:
+      while seq not in self._results:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not self._connected:
           self._healthy = 0
           return None
         self._cv.wait(remaining)
-      _, outputs, warm = self._result
+      outputs, warm = self._results[seq]
     if outputs is None or not warm or not np.all(np.isfinite(outputs)):
       self._healthy = 0
       return None
@@ -223,10 +232,11 @@ class GpuOnLan:
         try:
           conn = self._connect()
           with self._cv:
-            self._restart_sequence()
-            self._connected = True
-            if not self._engaged_once:
-              self._grace_start = time.monotonic()  # the server may come up mid-drive
+            if not self._connected:
+              self._restart_sequence()
+              if not self._engaged_once:
+                self._grace_start = time.monotonic()  # the server may come up mid-drive
+            self._connections += 1
         except Exception as e:
           cloudlog.debug(f"gpu on lan: connect to {'usb' if self.usb else self.host}:{self.port} failed: {e}")
           time.sleep(RECONNECT_INTERVAL_S)
@@ -247,15 +257,16 @@ class GpuOnLan:
         if resp.status != 200:
           raise ConnectionError(f"infer failed: {resp.status} {data[:200]!r}")
         header, outputs = decode_infer_response(data, int(resp.getheader("Inference-Header-Content-Length")))
-        result = (seq, outputs, bool(header.get("parameters", {}).get("sequence_warm", False)))
+        result = (outputs, bool(header.get("parameters", {}).get("sequence_warm", False)))
       except Exception as e:
         cloudlog.warning(f"gpu on lan: dropping connection ({type(e).__name__}: {e})")
         conn.close()
-        conn, result = None, (seq, None, False)
+        conn, result = None, (None, False)
 
       with self._cv:
-        self._result = result
-        self._connected = conn is not None
+        self._results[seq] = result
+        for old in [k for k in self._results if k < seq - 2 * CONNECTIONS - MAX_BACKLOG]:
+          del self._results[old]
         if conn is None:
-          self._queue.clear()  # a new sequence starts on reconnect
+          self._connections -= 1  # this frame never made it: the server's history has a hole
         self._cv.notify_all()
