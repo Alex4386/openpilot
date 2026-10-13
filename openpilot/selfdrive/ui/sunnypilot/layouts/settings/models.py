@@ -13,7 +13,9 @@ from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_selected
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.sunnypilot.model_info import (big_model_state, bundles_for_source, carrying_model, default_model_name,
-                                                           model_cache_size_mb, queued_name, refresh_in_progress, refresh_model_list)
+                                                           lan_gpu_model_name, model_cache_size_mb, queued_name, refresh_in_progress,
+                                                           refresh_model_list)
+from openpilot.selfdrive.ui.sunnypilot.ui_state import LanGpuState
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import DialogResult, Widget
@@ -208,6 +210,8 @@ class ModelsLayout(Widget):
     """The failover story for the Model Status row. One-way big -> small, and the
     fallback is runner-matched: a Default big can only fall back to the Default
     small (stock modeld), a custom big has no automatic fallback yet."""
+    if (lan_note := self._lan_gpu_note()) is not None:
+      return lan_note
     if not ui_state.chestnut_present:
       return ""
     big_bundle = get_selected_bundle(ui_state.params, "chestnut")
@@ -226,6 +230,23 @@ class ModelsLayout(Widget):
     if big_is_default:
       return tr("{} will drive. If it fails during a drive, {} takes over until the next drive.").format(big_name, fallback_name)
     return tr("{} will drive when the chestnut is ready.").format(big_name)
+
+  @staticmethod
+  def _lan_gpu_note() -> str | None:
+    """lan gpu runs the big model next to the on-device one, frame by frame, so there is no
+    one-way failover: whichever is on time drives."""
+    state = ui_state.lan_gpu_state
+    if state == LanGpuState.DISABLED:
+      return None
+    small_bundle = get_selected_bundle(ui_state.params, "qcom")
+    small = small_bundle.displayName if small_bundle else default_model_name("qcom")
+    if state == LanGpuState.ACTIVE:
+      return tr("{} is driving on the lan gpu server. {} takes over whenever the server falls behind.").format(lan_gpu_model_name(), small)
+    if state == LanGpuState.CONNECTING:
+      return tr("{} drives until the lan gpu server is ready.").format(small)
+    if state == LanGpuState.FALLBACK:
+      return tr("lan gpu server unavailable or too slow, {} is driving.").format(small)
+    return tr("lan gpu is on: the big model on the server drives while it keeps up, {} otherwise.").format(small)
 
   @staticmethod
   def _download_row_state(progresses, name: str) -> dict:

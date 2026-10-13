@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, Bi
 from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_selected_bundle
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.ui_state import ui_state, device
+from openpilot.selfdrive.ui.sunnypilot.ui_state import LanGpuState
 from openpilot.selfdrive.ui.sunnypilot.model_info import (active_source, big_model_state, bundles_for_source, carrying_model,
                                                            default_model_name, model_cache_size_mb, model_info, queued_name,
                                                            refresh_in_progress, refresh_model_list)
@@ -33,6 +34,10 @@ def _model_info() -> tuple[str, str, str]:
     big = get_selected_bundle(ui_state.params, "chestnut")
     carry_display = big.displayName if big else default_model_name("chestnut")
   active_text = (carry_display or active_name).lower()
+  lan_info = {LanGpuState.ACTIVE: tr("driving"), LanGpuState.CONNECTING: tr("connecting"),
+              LanGpuState.FALLBACK: tr("unavailable")}.get(ui_state.lan_gpu_state)
+  if lan_info is not None:
+    return active_text, tr("lan gpu"), lan_info
   if state == 'failed':
     return active_text, tr("big model"), tr("unavailable")
   if state == 'loading':
