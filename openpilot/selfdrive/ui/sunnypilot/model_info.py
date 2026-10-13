@@ -9,10 +9,12 @@ import os
 import time
 
 from openpilot.common.hardware.hw import Paths
+from openpilot.selfdrive.ui.sunnypilot.ui_state import LanGpuState
 from openpilot.selfdrive.ui.ui_state import ui_state, ChestnutState
 from openpilot.sunnypilot.models.fetcher import get_cached_bundles
 from openpilot.sunnypilot.models.helpers import get_active_source, get_selected_bundle, resolve_bundle_by_ref
 from openpilot.sunnypilot.models.model_name import DEFAULT_BIG_MODEL, DEFAULT_MODEL
+from openpilot.system.ui.lib.multilang import tr
 
 
 def model_cache_size_mb() -> float:
@@ -53,10 +55,19 @@ def big_model_state() -> str | None:
           ChestnutState.LOADING: 'loading'}.get(ui_state.chestnut_state)
 
 
+def lan_gpu_model_name() -> str:
+  """The big model the lan gpu server runs, by the name it reports."""
+  return ui_state.lan_gpu_model or tr("big model")
+
+
 def carrying_model() -> tuple[str | None, str | None, str | None]:
   """(source, internal name, display name) of what actually drives. Runner-matched:
   when a Default big cannot carry, stock modeld runs the Default small, never the
-  small slot's pick; a custom big has no automatic fallback yet -> (None, None, None)."""
+  small slot's pick; a custom big has no automatic fallback yet -> (None, None, None).
+  The big model on a lan gpu server is source "lan"."""
+  if ui_state.lan_gpu_state == LanGpuState.ACTIVE:
+    name = lan_gpu_model_name()
+    return "lan", name, name
   source = active_source()
   if source == "chestnut":
     bundle = get_selected_bundle(ui_state.params, "chestnut")

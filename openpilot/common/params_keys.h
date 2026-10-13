@@ -173,6 +173,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GpuOnLanActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"GpuOnLanEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"GpuOnLanHost", {PERSISTENT | BACKUP, STRING}},
+    {"GpuOnLanModel", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, STRING}},
     {"GreenLightAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"GithubRunnerSufficientVoltage", {CLEAR_ON_MANAGER_START , BOOL}},
     {"HasAcceptedTermsSP", {PERSISTENT, STRING, "0"}},

@@ -9,8 +9,10 @@ import math
 import pyray as rl
 
 from openpilot.selfdrive.ui.mici.layouts.home import MiciHomeLayout
+from openpilot.selfdrive.ui.sunnypilot.ui_state import LanGpuState
 from openpilot.selfdrive.ui.ui_state import ui_state, ChestnutState
 from openpilot.system.ui.lib.application import FontWeight
+from openpilot.system.ui.widgets.icon_widget import IconWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 
 
@@ -18,6 +20,15 @@ class MiciHomeLayoutSP(MiciHomeLayout):
   def __init__(self):
     super().__init__()
     self._openpilot_label = UnifiedLabel("sunnypilot", font_size=88, font_weight=FontWeight.AUDIOWIDE, max_width=480, wrap_text=False)
+
+    # lan gpu: the chestnut's icons with LAN on them, next to them in the status bar
+    self._lan_gpu_icon = IconWidget("icons_mici/lan_gpu_green.png", (54, 40))
+    self._lan_gpu_loading_icon = IconWidget("icons_mici/lan_gpu.png", (54, 40))
+    self._lan_gpu_failed_icon = IconWidget("icons_mici/lan_gpu_orange.png", (68, 40))
+    widgets = self._status_bar_layout.widgets
+    for i, icon in enumerate((self._lan_gpu_icon, self._lan_gpu_loading_icon, self._lan_gpu_failed_icon)):
+      self._status_bar_layout.add_widget(icon)
+      widgets.insert(widgets.index(self._chestnut_failed_icon) + 1 + i, widgets.pop())
 
   def _set_chestnut_visibility(self):
     usb_connected = ui_state.usb_connected
@@ -31,3 +42,11 @@ class MiciHomeLayoutSP(MiciHomeLayout):
     self._chestnut_icon.set_visible(not usb_unknown and not loading and
                                     chestnut_state in (ChestnutState.READY, ChestnutState.ACTIVE))
     self._chestnut_failed_icon.set_visible(not usb_unknown and chestnut_state in (ChestnutState.UNCOMPILED, ChestnutState.FAILED))
+
+    lan_state = ui_state.lan_gpu_state
+    # offroad it's only turned on, nothing says the server is up: white, not green
+    self._lan_gpu_icon.set_visible(lan_state == LanGpuState.ACTIVE)
+    self._lan_gpu_loading_icon.set_opacity(0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
+                                           if lan_state == LanGpuState.CONNECTING else 1.0)
+    self._lan_gpu_loading_icon.set_visible(lan_state in (LanGpuState.READY, LanGpuState.CONNECTING))
+    self._lan_gpu_failed_icon.set_visible(lan_state == LanGpuState.FALLBACK)

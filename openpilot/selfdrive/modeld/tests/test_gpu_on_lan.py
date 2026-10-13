@@ -42,3 +42,23 @@ def test_usb_target(monkeypatch):
                                   ("USB:9000", True, None, 9000), ("10.0.0.2:8001", False, "10.0.0.2", 8001)):
     c = gpu_on_lan.GpuOnLan(target)
     assert (c.usb, c.host, c.port) == (usb, host, port), target
+
+
+def test_state(monkeypatch):
+  from openpilot.selfdrive.modeld import gpu_on_lan
+  monkeypatch.setattr(gpu_on_lan.GpuOnLan, "_worker", lambda self: None)
+  outputs = np.zeros(4, dtype=np.float32)
+  c = gpu_on_lan.GpuOnLan("10.0.0.2")
+  assert c.state() is None  # connecting
+
+  monkeypatch.setattr(c, "_collect", lambda: outputs)
+  c.collect()
+  assert c.state() is True
+
+  monkeypatch.setattr(c, "_collect", lambda: None)
+  c.collect()
+  assert c.state() is False  # dropped out after driving
+
+  c = gpu_on_lan.GpuOnLan("10.0.0.2")
+  c._grace_start -= gpu_on_lan.ENGAGE_GRACE_S + 1
+  assert c.state() is False  # never came up
