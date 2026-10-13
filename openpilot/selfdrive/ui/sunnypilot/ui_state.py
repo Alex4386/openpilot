@@ -31,9 +31,9 @@ class LanGpuState(Enum):
   """lan gpu, the big model on a computer on the network, for the icons. A chestnut wins."""
   DISABLED = 0
   READY = 1  # turned on, offroad
-  CONNECTING = 2  # reaching the server and warming its model history
+  CONNECTING = 2  # Big Model Loading: reaching the server
   ACTIVE = 3  # the big model on the server drives
-  FALLBACK = 4  # the on-device model drives: server unreachable, too slow, or dropped out
+  FALLBACK = 4  # Big Model Failed: the on-device model drives until the next drive
 
 
 class UIStateSP:
@@ -53,6 +53,7 @@ class UIStateSP:
     self.screensaver_enabled: bool = False
 
     self.lan_gpu_enabled: bool = False
+    self.lan_gpu_loading: bool = False
     self.lan_gpu_active: bool | None = None
     self.lan_gpu_model: str | None = None
     self.lan_gpu_state = LanGpuState.DISABLED
@@ -91,7 +92,7 @@ class UIStateSP:
       self.lan_gpu_state = LanGpuState.DISABLED
     elif not self.started:
       self.lan_gpu_state = LanGpuState.READY
-    elif self.lan_gpu_active is None:
+    elif self.lan_gpu_loading or self.lan_gpu_active is None:
       self.lan_gpu_state = LanGpuState.CONNECTING
     else:
       self.lan_gpu_state = LanGpuState.ACTIVE if self.lan_gpu_active else LanGpuState.FALLBACK
@@ -179,6 +180,7 @@ class UIStateSP:
     self._enforce_constraints()
     if not self.started:
       self.lan_gpu_enabled = self.params.get_bool("GpuOnLanEnabled")  # modeld reads it once per drive, too
+    self.lan_gpu_loading = self.params.get_bool("GpuOnLanLoading")
     self.lan_gpu_active = self.params.get("GpuOnLanActive")
     self.lan_gpu_model = self.params.get("GpuOnLanModel")
     source = get_active_source(chestnut=self.chestnut_present, chestnut_active=self.chestnut_active,

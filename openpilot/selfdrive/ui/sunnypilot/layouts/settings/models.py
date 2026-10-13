@@ -233,20 +233,19 @@ class ModelsLayout(Widget):
 
   @staticmethod
   def _lan_gpu_note() -> str | None:
-    """lan gpu runs the big model next to the on-device one, frame by frame, so there is no
-    one-way failover: whichever is on time drives."""
+    """Same failover as the chestnut: one-way, to the on-device model, until the next drive."""
     state = ui_state.lan_gpu_state
     if state == LanGpuState.DISABLED:
       return None
     small_bundle = get_selected_bundle(ui_state.params, "qcom")
     small = small_bundle.displayName if small_bundle else default_model_name("qcom")
     if state == LanGpuState.ACTIVE:
-      return tr("{} is driving on the lan gpu server. {} takes over whenever the server falls behind.").format(lan_gpu_model_name(), small)
+      return tr("{} is driving on the lan gpu server. If it fails, {} takes over until the next drive.").format(lan_gpu_model_name(), small)
     if state == LanGpuState.CONNECTING:
-      return tr("{} drives until the lan gpu server is ready.").format(small)
+      return tr("Connecting to the lan gpu server.")
     if state == LanGpuState.FALLBACK:
-      return tr("lan gpu server unavailable or too slow, {} is driving.").format(small)
-    return tr("lan gpu is on: the big model on the server drives while it keeps up, {} otherwise.").format(small)
+      return tr("lan gpu server unavailable, {} is driving until the next drive.").format(small)
+    return tr("The big model on the lan gpu server will drive. If it fails, {} takes over until the next drive.").format(small)
 
   @staticmethod
   def _download_row_state(progresses, name: str) -> dict:
