@@ -319,7 +319,7 @@ def main(demo=False):
   chestnut_state = ChestnutGpuState(pm, model.chestnut) if CHESTNUT else None
   gpu_on_lan = None
   if not model.chestnut and params.get_bool("GpuOnLanEnabled"):
-    gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on a USB-C cable
+    gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on the USB Ethernet link
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
