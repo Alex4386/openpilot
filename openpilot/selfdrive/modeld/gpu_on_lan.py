@@ -30,6 +30,7 @@ BUDGET_S = 0.040  # submit -> collect; warp + this + publishing must fit the 50m
 RECONNECT_INTERVAL_S = 2.0
 IO_TIMEOUT_S = 1.0  # a stalled server, not a slow frame; slow frames are handled by BUDGET_S
 HEALTHY_FRAMES_TO_ENGAGE = 20  # consecutive on-time warm responses before outputs are used
+ENGAGE_GRACE_S = 10.  # connecting + warming the server's history before it counts as failing
 
 
 def parse_host(target: str) -> tuple[str, int]:
@@ -69,6 +70,7 @@ class GpuOnLan:
     self.usb = host.lower() == USB_TARGET
     self.host: str | None = None if self.usb else host
     self.output_slices: dict[str, slice] | None = None
+    self.model_name: str | None = None  # what the server says it runs, e.g. "Cinque Terre Model v2"
     self._cv = threading.Condition()
     self._pending: tuple[int, bytes, int] | None = None  # (seq, body, header_len) waiting for the worker
     self._busy = False
@@ -79,11 +81,23 @@ class GpuOnLan:
     self._sequence_id = 0
     self._connected = False
     self._healthy = 0
+    self._engaged = False  # the last collect() returned outputs
+    self._engaged_once = False
+    self._grace_start = time.monotonic()
     threading.Thread(target=self._worker, daemon=True, name="gpu_on_lan").start()
 
   @property
   def active(self) -> bool:
     return self._connected and self._healthy >= HEALTHY_FRAMES_TO_ENGAGE
+
+  def state(self) -> bool | None:
+    """True: the big model on the server drives. False: it doesn't, because the server is
+    unreachable or too slow, or dropped out after driving. None: still getting there."""
+    if self._engaged:
+      return True
+    if self._engaged_once or time.monotonic() - self._grace_start > ENGAGE_GRACE_S:
+      return False
+    return None
 
   def submit(self, new_img: np.ndarray, desire: np.ndarray, traffic_convention: np.ndarray, action_t: np.ndarray) -> None:
     """Called right after the warp; never blocks on the network."""
@@ -108,6 +122,12 @@ class GpuOnLan:
 
   def collect(self) -> np.ndarray | None:
     """Raw big model outputs for the last submit if they arrive within budget and are trustworthy."""
+    outputs = self._collect()
+    self._engaged = outputs is not None
+    self._engaged_once |= self._engaged
+    return outputs
+
+  def _collect(self) -> np.ndarray | None:
     seq = self._submitted
     if seq is None:
       self._healthy = 0
@@ -148,6 +168,7 @@ class GpuOnLan:
     meta = json.loads(conn.getresponse().read())
     slices = json.loads(meta["parameters"]["output_slices"])
     self.output_slices = {k: slice(*v) for k, v in slices.items()}
+    self.model_name = meta["parameters"].get("model_name")
     conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     cloudlog.warning(f"gpu on lan: connected to {self.host}:{self.port}, model {meta['parameters'].get('model_checkpoint')}")
     return conn
@@ -161,6 +182,8 @@ class GpuOnLan:
           with self._cv:
             self._seq, self._sequence_id, self._healthy, self._result = 0, random.getrandbits(63), 0, None
             self._connected = True
+            if not self._engaged_once:
+              self._grace_start = time.monotonic()  # the server may come up mid-drive
         except Exception as e:
           cloudlog.debug(f"gpu on lan: connect to {'usb' if self.usb else self.host}:{self.port} failed: {e}")
           time.sleep(RECONNECT_INTERVAL_S)
