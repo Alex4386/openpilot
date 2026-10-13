@@ -41,3 +41,10 @@ def test_usb_target():
                                   ("USB:9000", True, None, 9000), ("10.0.0.2:8001", False, "10.0.0.2", 8001)):
     c = GpuOnLan(target)
     assert (c.usb, c.host, c.port) == (usb, host, port), target
+
+
+def test_decoded_outputs_writable():
+  outputs = np.ones(2, dtype=np.float32)
+  header = json.dumps({"outputs": [{"name": "outputs", "parameters": {"binary_data_size": outputs.nbytes}}]}).encode()
+  _, decoded = decode_infer_response(header + outputs.tobytes(), len(header))
+  decoded -= 1  # the parser's softmax does this
