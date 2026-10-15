@@ -60,11 +60,21 @@ class LanGpuLayoutMici(NavScroller):
     self._usb_address_btn.set_click_callback(usb_address_callback)
     self._usb_address_btn.set_enabled(lambda: ui_state.params.get_bool("UsbNetworkEnabled"))
 
+    def usb_gateway_callback(checked: bool):
+      if ui_state.params.get_bool("UsbNetworkEnabled"):
+        threading.Thread(target=usb_network.up, daemon=True).start()
+
+    usb_gateway_toggle = BigParamControl("share internet", "UsbNetworkGateway", toggle_callback=usb_gateway_callback,
+                                         description="Make this device the computer's internet gateway on the USB network. " +
+                                                     "Off: the computer keeps using its own internet connection.")
+    usb_gateway_toggle.set_enabled(lambda: ui_state.params.get_bool("UsbNetworkEnabled"))
+
     self._scroller.add_widgets([
       enabled_toggle,
       self._server_btn,
       usb_toggle,
       self._usb_address_btn,
+      usb_gateway_toggle,
     ])
 
   def _update_state(self):
