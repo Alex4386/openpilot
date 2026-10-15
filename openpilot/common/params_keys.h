@@ -198,6 +198,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"QuietMode", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"UsbNetworkAddress", {PERSISTENT | BACKUP, STRING, "10.47.0.1/24"}},
     {"UsbNetworkEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"UsbNetworkGateway", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RainbowMode", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RoadEdgeLaneChangeEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RocketFuel", {PERSISTENT | BACKUP, BOOL, "0"}},

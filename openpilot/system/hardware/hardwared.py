@@ -541,7 +541,7 @@ def main():
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
     if Params().get_bool("UsbNetworkEnabled"):
-      # AGNOS rebuilds the USB gadget every boot; re-add the network function (one-shot)
+      # our DHCP server on the USB network doesn't outlive a reboot (one-shot)
       threading.Thread(target=usb_network.up, daemon=True).start()
 
   for t in threads:

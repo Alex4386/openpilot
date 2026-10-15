@@ -62,7 +62,15 @@ class LanGpuLayout(Widget):
     )
     self._usb_address.action_item.set_value(lambda: str(usb_network.configured_address()))
 
-    return [self._enabled, self._server, self._usb_network, self._usb_address]
+    self._usb_gateway = toggle_item_sp(
+      title=lambda: tr("Share Internet over USB Network"),
+      description=lambda: tr("Make this device the computer's internet gateway on the USB network. " +
+                             "Off: the computer keeps using its own internet connection."),
+      param="UsbNetworkGateway",
+      callback=lambda _: ui_state.params.get_bool("UsbNetworkEnabled") and threading.Thread(target=usb_network.up, daemon=True).start(),
+    )
+
+    return [self._enabled, self._server, self._usb_network, self._usb_address, self._usb_gateway]
 
   def _server_label(self) -> str:
     if host := ui_state.params.get("GpuOnLanHost"):
@@ -76,6 +84,7 @@ class LanGpuLayout(Widget):
       self._usb_peer_checked = now
       self._usb_peer = (usb_network.peer_address() or "") if ui_state.params.get_bool("UsbNetworkEnabled") else ""
     self._usb_address.action_item.set_enabled(ui_state.params.get_bool("UsbNetworkEnabled"))
+    self._usb_gateway.action_item.set_enabled(ui_state.params.get_bool("UsbNetworkEnabled"))
 
   @staticmethod
   def _edit_server():

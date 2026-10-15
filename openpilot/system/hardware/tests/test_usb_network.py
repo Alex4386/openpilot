@@ -16,3 +16,11 @@ def test_peer_from_leases(tmp_path, monkeypatch):
   monkeypatch.setattr(usb_network, "configured_address", lambda: ipaddress.IPv4Interface("10.47.0.1/24"))
   monkeypatch.setattr(usb_network.glob, "glob", lambda _: [str(leases)])
   assert usb_network.peer_address() == "10.47.0.30"  # newest on our subnet, not the hotspot's
+
+
+def test_dnsmasq_hands_out_no_gateway():
+  args = usb_network.dnsmasq_args(ipaddress.IPv4Interface("10.47.0.1/24"))
+  assert "--dhcp-range=10.47.0.2,10.47.0.254,255.255.255.0,12h" in args
+  assert "--dhcp-option=3" in args and "--dhcp-option=6" in args  # no router, no DNS server
+  assert "--port=0" in args
+  assert "--dhcp-range=10.47.0.1,10.47.0.253,255.255.255.0,12h" in usb_network.dnsmasq_args(ipaddress.IPv4Interface("10.47.0.254/24"))
