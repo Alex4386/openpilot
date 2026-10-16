@@ -24,3 +24,13 @@ def test_dnsmasq_hands_out_no_gateway():
   assert "--dhcp-option=3" in args and "--dhcp-option=6" in args  # no router, no DNS server
   assert "--port=0" in args
   assert "--dhcp-range=10.47.0.1,10.47.0.253,255.255.255.0,12h" in usb_network.dnsmasq_args(ipaddress.IPv4Interface("10.47.0.254/24"))
+
+
+def test_gateway_shares_router_dns_and_nat():
+  address = ipaddress.IPv4Interface("10.47.0.1/24")
+  args = usb_network.dnsmasq_args(address, gateway=True)
+  assert "--port=0" not in args and "--dhcp-option=3" not in args  # dnsmasq is the router and DNS
+  rules = usb_network.nat_rules(address)
+  assert ("nat", "MASQUERADE") in [(t, r[-1]) for t, r in rules]
+  assert any("--clamp-mss-to-pmtu" in r for _, r in rules)  # LTE MTU
+  assert all(usb_network.RULE_TAG in r for _, r in rules)

@@ -8,11 +8,11 @@ NetworkManager connection, configured over D-Bus so polkit authorizes it, the sa
 settings UI uses for tethering. The connection isn't tied to an interface name, so an adapter
 plugged in at any time gets it; the device has no other wired Ethernet.
 
-The laptop gets its address over DHCP. By default the DHCP server (our own dnsmasq) hands out
-no router and no DNS server, so the laptop keeps its own internet connection. With
-UsbNetworkGateway the link is shared like the Wi-Fi hotspot instead (NetworkManager's shared
-mode: its dnsmasq makes the device the laptop's gateway and DNS, with NAT to the device's
-internet).
+The laptop gets its address over DHCP from our own dnsmasq. By default it hands out no router
+and no DNS server, so the laptop keeps its own internet connection. With UsbNetworkGateway the
+device becomes the laptop's router and DNS (dnsmasq forwards to the device's resolvers) and NATs
+its traffic out of whichever uplink the device uses (Wi-Fi, or LTE on ppp0/rmnet, whose address
+changes and whose MTU is below the cable's 1500, so forwarded TCP gets its MSS clamped).
 
 Turned on from Settings -> lan gpu -> usb network (UsbNetworkEnabled), re-applied at boot by
 hardwared.
@@ -21,6 +21,7 @@ hardwared.
 """
 import glob
 import ipaddress
+import shlex
 import subprocess
 import sys
 import uuid
@@ -32,6 +33,7 @@ CONNECTION_ID = "USB network"
 DEFAULT_ADDRESS = "10.47.0.1/24"
 DNSMASQ_PID = "/run/usb-network-dnsmasq.pid"
 DNSMASQ_LEASES = "/run/usb-network-dnsmasq.leases"
+RULE_TAG = "usb-network"  # iptables comment on every rule we add, so teardown removes exactly ours
 
 
 def parse_address(text: str) -> ipaddress.IPv4Interface | None:
@@ -51,18 +53,51 @@ def configured_address() -> ipaddress.IPv4Interface:
   return parse_address(Params().get("UsbNetworkAddress") or "") or ipaddress.IPv4Interface(DEFAULT_ADDRESS)
 
 
-def dnsmasq_args(address: ipaddress.IPv4Interface) -> list[str]:
-  """DHCP only (no DNS server) on the USB Ethernet adapter, handing out no router and no DNS server."""
+def dnsmasq_args(address: ipaddress.IPv4Interface, gateway: bool = False) -> list[str]:
+  """DHCP on the USB Ethernet adapter. Without gateway: no DNS server, and no router or DNS handed out.
+  With gateway: dnsmasq hands itself out as router and DNS, forwarding to the device's resolvers."""
   net = address.network
   if address.ip + 1 < net.broadcast_address:
     first, last = address.ip + 1, net.broadcast_address - 1
   else:
     first, last = net.network_address + 1, address.ip - 1
-  return ["dnsmasq", "--conf-file=/dev/null", "--port=0", "--bind-dynamic",
-          "--interface=eth*", "--interface=enx*",  # USB Ethernet adapters; the hotspot's dnsmasq has wlan0
+  args = ["dnsmasq", "--conf-file=/dev/null", "--bind-dynamic",
+          "--interface=eth*", "--interface=enx*", "--except-interface=lo",  # USB Ethernet adapters only
           f"--dhcp-range={first},{last},{net.netmask},12h",
-          "--dhcp-option=3", "--dhcp-option=6",  # no data: send no router and no DNS server
           f"--dhcp-leasefile={DNSMASQ_LEASES}", f"--pid-file={DNSMASQ_PID}"]
+  if gateway:
+    return args
+  return args + ["--port=0", "--dhcp-option=3", "--dhcp-option=6"]  # no data: send no router and no DNS server
+
+
+def nat_rules(address: ipaddress.IPv4Interface) -> list[tuple[str, list[str]]]:
+  """(table, rule) for sharing the device's internet with the laptop, each tagged with RULE_TAG."""
+  net = str(address.network)
+  tag = ["-m", "comment", "--comment", RULE_TAG]
+  return [
+    # out of any uplink (wlan0, ppp0, rmnet...); MASQUERADE follows LTE's changing address
+    ("nat", ["POSTROUTING", "-s", net, "!", "-d", net, *tag, "-j", "MASQUERADE"]),
+    ("filter", ["FORWARD", "-s", net, *tag, "-j", "ACCEPT"]),
+    ("filter", ["FORWARD", "-d", net, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", *tag, "-j", "ACCEPT"]),
+    # the uplink's MTU (ppp0/LTE) is below the cable's 1500: clamp forwarded TCP so connections don't stall
+    ("mangle", ["FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-s", net, *tag, "-j", "TCPMSS", "--clamp-mss-to-pmtu"]),
+    ("mangle", ["FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-d", net, *tag, "-j", "TCPMSS", "--clamp-mss-to-pmtu"]),
+  ]
+
+
+def _remove_nat() -> None:
+  for table in ("nat", "filter", "mangle"):
+    rules = subprocess.run(["sudo", "iptables", "-t", table, "-S"], capture_output=True, text=True).stdout
+    for line in rules.splitlines():
+      if line.startswith("-A ") and f"--comment {RULE_TAG}" in line:
+        subprocess.run(["sudo", "iptables", "-t", table, "-D", *shlex.split(line)[1:]], capture_output=True)
+
+
+def _add_nat(address: ipaddress.IPv4Interface) -> None:
+  subprocess.run(["sudo", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], check=True, capture_output=True)
+  for table, rule in nat_rules(address):
+    # inserted first in the chain, ahead of any DROP rule
+    subprocess.run(["sudo", "iptables", "-t", table, "-I", *rule], check=True, capture_output=True)
 
 
 def _stop_dnsmasq() -> None:
@@ -72,13 +107,13 @@ def _stop_dnsmasq() -> None:
 
 # NetworkManager over D-Bus (polkit-authorized, like the hotspot)
 
-def _nm_connection(conn, address: ipaddress.IPv4Interface | None, gateway: bool = False) -> str | None:
+def _nm_connection(conn, address: ipaddress.IPv4Interface | None) -> str | None:
   """Finds our connection; with an address, (re)creates it so it matches."""
   from jeepney import DBusAddress, new_method_call
   from openpilot.system.ui.lib.networkmanager import NM, NM_SETTINGS_PATH, NM_SETTINGS_IFACE, NM_CONNECTION_IFACE
 
   settings = DBusAddress(NM_SETTINGS_PATH, bus_name=NM, interface=NM_SETTINGS_IFACE)
-  method = 'shared' if gateway else 'manual'  # shared: NetworkManager's dnsmasq makes us the gateway (NAT)
+  method = 'manual'  # DHCP and NAT are ours (dnsmasq_args, nat_rules), not NetworkManager's shared mode
   for path in conn.send_and_get_reply(new_method_call(settings, 'ListConnections')).body[0]:
     addr = DBusAddress(path, bus_name=NM, interface=NM_CONNECTION_IFACE)
     current = conn.send_and_get_reply(new_method_call(addr, 'GetSettings')).body[0]
@@ -91,7 +126,7 @@ def _nm_connection(conn, address: ipaddress.IPv4Interface | None, gateway: bool 
     if 'interface-name' not in current['connection'] and data and ipv4.get('method', ('', ''))[1] == method and \
        data[0]['address'][1] == str(address.ip) and data[0]['prefix'][1] == address.network.prefixlen:
       return path
-    conn.send_and_get_reply(new_method_call(addr, 'Delete'))  # subnet or gateway changed in settings, or an old gadget one
+    conn.send_and_get_reply(new_method_call(addr, 'Delete'))  # subnet changed in settings, or an old shared/gadget one
   if address is None:
     return None
   connection = {
@@ -117,11 +152,13 @@ def up() -> bool:
   address, gateway = configured_address(), Params().get_bool("UsbNetworkGateway")
   try:
     _stop_dnsmasq()
+    _remove_nat()
     with open_dbus_connection(bus="SYSTEM") as conn:
-      if _nm_connection(conn, address, gateway) is None:
+      if _nm_connection(conn, address) is None:
         return False
-    if not gateway:
-      subprocess.run(["sudo", *dnsmasq_args(address)], check=True, capture_output=True)  # forks into the background
+    subprocess.run(["sudo", *dnsmasq_args(address, gateway)], check=True, capture_output=True)  # forks into the background
+    if gateway:
+      _add_nat(address)
     return True
   except Exception:
     cloudlog.exception("usb network: bring-up failed")
@@ -134,6 +171,7 @@ def down() -> None:
   from openpilot.system.ui.lib.networkmanager import NM, NM_CONNECTION_IFACE
   try:
     _stop_dnsmasq()
+    _remove_nat()
     with open_dbus_connection(bus="SYSTEM") as conn:
       if (path := _nm_connection(conn, None)) is not None:
         conn.send_and_get_reply(new_method_call(DBusAddress(path, bus_name=NM, interface=NM_CONNECTION_IFACE), 'Delete'))
