@@ -36,6 +36,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
+LAN_GPU_MAX_FRAME_DROP = 10  # % of camera frames; the network round trip leaves a frame little slack
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
 
@@ -84,6 +85,7 @@ class SelfdriveD:
     self.big_model_loading = False
     self.big_model_active = False
     self.big_model_failed = False
+    self.lan_gpu_driving = False
     self.big_model_ready_t = 0.
 
     # Setup sockets
@@ -200,9 +202,11 @@ class SelfdriveD:
 
     big_active = self.params.get("ChestnutActive")
     chestnut_present = self.sm['deviceState'].chestnutPresent
-    if big_active is None:  # the big model on a computer on the network (lan gpu) instead, same rules
+    lan_gpu = big_active is None
+    if lan_gpu:  # the big model on a computer on the network (lan gpu) instead, same rules
       big_active = self.params.get("GpuOnLanActive")
       chestnut_present = big_active is not None
+    self.lan_gpu_driving = lan_gpu and big_active is True
     model_unavailable = big_active is True and self.sm.seen['modelV2'] and not self.sm.alive['modelV2']
     big_failed = big_active is False or model_unavailable or (self.big_model_active and not chestnut_present)
     if big_failed and not self.big_model_failed:
@@ -507,7 +511,7 @@ class SelfdriveD:
 
     # TODO: fix simulator
     if not SIMULATION or REPLAY:
-      if self.sm['modelV2'].frameDropPerc > 1 and not big_model_settling:
+      if self.sm['modelV2'].frameDropPerc > (LAN_GPU_MAX_FRAME_DROP if self.lan_gpu_driving else 1) and not big_model_settling:
         self.events.add(EventName.modeldLagging)
 
     # mute canBusMissing event if in Park, as it sometimes may trigger a false alarm with MADS in Paused state
