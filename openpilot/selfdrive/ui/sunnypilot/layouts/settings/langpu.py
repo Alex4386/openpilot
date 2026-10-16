@@ -64,7 +64,8 @@ class LanGpuLayout(Widget):
 
     self._usb_gateway = toggle_item_sp(
       title=lambda: tr("Share Internet over USB Network"),
-      description=lambda: tr("Make this device the computer's internet gateway on the USB network. " +
+      description=lambda: tr("Share this device's internet (Wi-Fi or LTE) with the computer on the USB network: " +
+                             "it becomes the computer's router and DNS, with NAT. Uses LTE data when on LTE. " +
                              "Off: the computer keeps using its own internet connection."),
       param="UsbNetworkGateway",
       callback=lambda _: ui_state.params.get_bool("UsbNetworkEnabled") and threading.Thread(target=usb_network.up, daemon=True).start(),

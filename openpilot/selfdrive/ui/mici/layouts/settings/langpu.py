@@ -65,7 +65,8 @@ class LanGpuLayoutMici(NavScroller):
         threading.Thread(target=usb_network.up, daemon=True).start()
 
     usb_gateway_toggle = BigParamControl("share internet", "UsbNetworkGateway", toggle_callback=usb_gateway_callback,
-                                         description="Make this device the computer's internet gateway on the USB network. " +
+                                         description="Share this device's internet (Wi-Fi or LTE) with the computer on the USB network: " +
+                                                     "it becomes the computer's router and DNS, with NAT. Uses LTE data when on LTE. " +
                                                      "Off: the computer keeps using its own internet connection.")
     usb_gateway_toggle.set_enabled(lambda: ui_state.params.get_bool("UsbNetworkEnabled"))
 
