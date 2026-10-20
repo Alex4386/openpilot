@@ -271,11 +271,18 @@ def main() -> NoReturn:
   calibrator = Calibrator(param_put=True)
   calibrator.not_car = CP.notCar
 
+  lan_gpu = False
   while 1:
     timeout = 0 if sm.frame == -1 else 100
     sm.update(timeout)
 
     if sm.updated['cameraOdometry']:
+      lan_gpu = params_reader.get_bool("GpuOnLanActive")
+    # lan gpu: a camera frame modeld dropped leaves the next pose invalid; skip it, like locationd does
+    # (selfdrived bounds how often: Driving Model Lagging over 10%)
+    pose_dropped = lan_gpu and not sm.valid['cameraOdometry']
+
+    if sm.updated['cameraOdometry'] and not pose_dropped:
       calibrator.handle_v_ego(sm['carState'].vEgo)
       new_rpy = calibrator.handle_cam_odom(sm['cameraOdometry'].trans,
                                            sm['cameraOdometry'].rot,
@@ -289,7 +296,8 @@ def main() -> NoReturn:
 
     # 4Hz driven by cameraOdometry
     if sm.frame % 5 == 0:
-      calibrator.send_data(pm, sm.all_checks())
+      calibrator.send_data(pm, sm.all_alive() and sm.all_freq_ok() and
+                           sm.all_valid([s for s in sm.services if not (lan_gpu and s == 'cameraOdometry')]))
 
 
 if __name__ == "__main__":

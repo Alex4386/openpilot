@@ -28,6 +28,15 @@ class OnroadTimerStatus(Enum):
   RESUME = 2
 
 
+class LanGpuState(Enum):
+  """lan gpu, the big model on a computer on the network, for the icons. A chestnut wins."""
+  DISABLED = 0
+  READY = 1  # turned on, offroad
+  CONNECTING = 2  # Big Model Loading: reaching the server
+  ACTIVE = 3  # the big model on the server drives
+  FALLBACK = 4  # Big Model Failed: the on-device model drives until the next drive
+
+
 class UIStateSP:
   def __init__(self):
     self.params = Params()
@@ -43,6 +52,12 @@ class UIStateSP:
 
     self.screensaver = ScreenSaverSP(params=self.params)
     self.screensaver_enabled: bool = False
+
+    self.lan_gpu_enabled: bool = False
+    self.lan_gpu_loading: bool = False
+    self.lan_gpu_active: bool | None = None
+    self.lan_gpu_model: str | None = None
+    self.lan_gpu_state = LanGpuState.DISABLED
 
     self.active_bundle = None
     self.model_runner_tinygrad: bool = False
@@ -71,6 +86,17 @@ class UIStateSP:
       self.sunnylink_state.start()
     else:
       self.sunnylink_state.stop()
+    self._update_lan_gpu_state()
+
+  def _update_lan_gpu_state(self) -> None:
+    if not self.lan_gpu_enabled or self.chestnut_present:
+      self.lan_gpu_state = LanGpuState.DISABLED
+    elif not self.started:
+      self.lan_gpu_state = LanGpuState.READY
+    elif self.lan_gpu_loading or self.lan_gpu_active is None:
+      self.lan_gpu_state = LanGpuState.CONNECTING
+    else:
+      self.lan_gpu_state = LanGpuState.ACTIVE if self.lan_gpu_active else LanGpuState.FALLBACK
 
   def onroad_brightness_handle_alerts(self, _ui_state, alert):
     if _ui_state.sm.recv_frame["carState"] < _ui_state.started_frame:
@@ -153,6 +179,11 @@ class UIStateSP:
       self.has_icbm = self.CP_SP.intelligentCruiseButtonManagementAvailable and self.params.get_bool("IntelligentCruiseButtonManagement")
 
     self._enforce_constraints()
+    if not self.started:
+      self.lan_gpu_enabled = self.params.get_bool("GpuOnLanEnabled")  # modeld reads it once per drive, too
+    self.lan_gpu_loading = self.params.get_bool("GpuOnLanLoading")
+    self.lan_gpu_active = self.params.get("GpuOnLanActive")
+    self.lan_gpu_model = self.params.get("GpuOnLanModel")
     source = get_active_source(chestnut=self.chestnut_present, chestnut_active=self.chestnut_active,
                                chestnut_loading=self.chestnut_loading, offroad=self.is_offroad())
     self.active_bundle = self.params.get(ACTIVE_BUNDLE_KEYS[source])

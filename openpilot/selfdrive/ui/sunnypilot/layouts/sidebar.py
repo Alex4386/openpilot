@@ -9,6 +9,7 @@ import math
 import pyray as rl
 import time
 from dataclasses import dataclass
+from openpilot.selfdrive.ui.sunnypilot.ui_state import LanGpuState
 from openpilot.selfdrive.ui.ui_state import ui_state, ChestnutState
 from openpilot.sunnypilot.sunnylink.api import UNREGISTERED_SUNNYLINK_DONGLE_ID
 from openpilot.system.ui.lib.application import gui_app
@@ -62,6 +63,9 @@ class SidebarSP:
     self._chestnut_green_img = gui_app.texture("icons_mici/chestnut_green.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_default_img = gui_app.texture("icons_mici/chestnut.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_orange_img = gui_app.texture("icons_mici/chestnut_orange.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
+    self._lan_gpu_green_img = gui_app.texture("icons_mici/lan_gpu_green.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
+    self._lan_gpu_default_img = gui_app.texture("icons_mici/lan_gpu.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
+    self._lan_gpu_orange_img = gui_app.texture("icons_mici/lan_gpu_orange.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
 
   def _update_sunnylink_status(self):
     if not ui_state.params.get_bool("SunnylinkEnabled"):
@@ -91,7 +95,7 @@ class SidebarSP:
     default_pos = rl.Vector2(HOME_BTN.x, HOME_BTN.y)
     state = ui_state.chestnut_state
     if state == ChestnutState.DISCONNECTED:
-      return default_img, default_pos, 1.0
+      return self._get_lan_gpu_icon(default_img, default_pos)
 
     if state == ChestnutState.LOADING:
       icon = self._chestnut_default_img
@@ -100,6 +104,25 @@ class SidebarSP:
       icon, opacity = self._chestnut_orange_img, 1.0
     else:
       icon, opacity = self._chestnut_green_img, 1.0
+
+    x = HOME_BTN.x + (HOME_BTN.width - icon.width) / 2
+    y = HOME_BTN.y + (HOME_BTN.height - icon.height) / 2
+    return icon, rl.Vector2(x, y), opacity
+
+  def _get_lan_gpu_icon(self, default_img: rl.Texture, default_pos: rl.Vector2) -> tuple[rl.Texture, rl.Vector2, float]:
+    state = ui_state.lan_gpu_state
+    if state == LanGpuState.DISABLED:
+      return default_img, default_pos, 1.0
+
+    if state == LanGpuState.CONNECTING:
+      icon = self._lan_gpu_default_img
+      opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
+    elif state == LanGpuState.FALLBACK:
+      icon, opacity = self._lan_gpu_orange_img, 1.0
+    elif state == LanGpuState.ACTIVE:
+      icon, opacity = self._lan_gpu_green_img, 1.0
+    else:  # offroad it's only turned on, nothing says the server is up
+      icon, opacity = self._lan_gpu_default_img, 1.0
 
     x = HOME_BTN.x + (HOME_BTN.width - icon.width) / 2
     y = HOME_BTN.y + (HOME_BTN.height - icon.height) / 2
