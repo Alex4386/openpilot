@@ -359,7 +359,12 @@ def main(demo=False):
     # loads like the chestnut: Big Model Loading until the server answers, the on-device model if it doesn't
     if model.adapter.is_native:
       gpu_on_lan = GpuOnLan(params.get("GpuOnLanHost") or "usb")  # default: laptop on the USB Ethernet link
-      if not gpu_on_lan.connect(BIG_MODEL_TIMEOUT):
+      try:
+        model.adapter.warp()  # load the standalone warp now, not on the first frame
+      except Exception:
+        cloudlog.exception("gpu on lan: warp failed to load")
+        gpu_on_lan = None
+      if gpu_on_lan is not None and not gpu_on_lan.connect(BIG_MODEL_TIMEOUT):
         gpu_on_lan = None
     else:
       cloudlog.warning("gpu on lan: a legacy model warps inside its policy, there's no new_img to send")
