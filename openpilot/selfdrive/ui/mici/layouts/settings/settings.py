@@ -34,7 +34,7 @@ class SettingsLayout(NavScroller):
     self._device_button.set_click_callback(lambda: gui_app.push_widget(self._device_panel))
 
     langpu_panel = LanGpuLayoutMici()
-    langpu_btn = SettingsBigButton("lan gpu", "", gui_app.texture("icons_mici/chestnut.png", 76, 56))
+    langpu_btn = SettingsBigButton("lan gpu", "", gui_app.texture("icons_mici/lan_gpu.png", 76, 56))
     langpu_btn.set_click_callback(lambda: gui_app.push_widget(langpu_panel))
 
     software_panel = SoftwareLayoutMici()
