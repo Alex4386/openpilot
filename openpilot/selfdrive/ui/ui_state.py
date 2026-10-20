@@ -14,6 +14,7 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.hardware import HARDWARE, PC
 from openpilot.common.hardware.usb import cable_connected, get_usb_state, is_chestnut_usb_id
 from openpilot.selfdrive.modeld.helpers import chestnut_compiled
+from openpilot.system.hardware import usb_network
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
 from openpilot.selfdrive.ui.sunnypilot.ui_state import UIStateSP, DeviceSP
@@ -215,7 +216,9 @@ class UIState(UIStateSP):
         self.status = UIStatus.DISENGAGED
         self.started_frame = self.sm.frame
         self.started_time = time.monotonic()
-        self.chestnut_present = self.sm["deviceState"].chestnutPresent or (self.chestnut_compiled and self.usb_connected)
+        # lan gpu's USB Ethernet adapter takes the chestnut's port: its cable isn't a chestnut (same as modeld)
+        self.chestnut_present = self.sm["deviceState"].chestnutPresent or \
+          (self.chestnut_compiled and self.usb_connected and not usb_network.adapter_present())
 
       for callback in self._offroad_transition_callbacks:
         callback()
