@@ -25,7 +25,9 @@ import shlex
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
+from openpilot.common.hardware.usb import PRIMARY_USB_CONTROLLER, controller
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
@@ -34,6 +36,16 @@ DEFAULT_ADDRESS = "10.47.0.1/24"
 DNSMASQ_PID = "/run/usb-network-dnsmasq.pid"
 DNSMASQ_LEASES = "/run/usb-network-dnsmasq.leases"
 RULE_TAG = "usb-network"  # iptables comment on every rule we add, so teardown removes exactly ours
+NET_PATH = Path("/sys/class/net")
+
+
+def adapter_present() -> bool:
+  """A USB Ethernet adapter on the USB-C port. The port is the chestnut's, so its cable isn't one then."""
+  try:
+    return any((ctrl := controller(net / "device")) is not None and ctrl.name == PRIMARY_USB_CONTROLLER
+               for net in NET_PATH.iterdir() if (net / "device").exists())
+  except OSError:
+    return False
 
 
 def parse_address(text: str) -> ipaddress.IPv4Interface | None:

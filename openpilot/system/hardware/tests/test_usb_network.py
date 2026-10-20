@@ -34,3 +34,17 @@ def test_gateway_shares_router_dns_and_nat():
   assert ("nat", "MASQUERADE") in [(t, r[-1]) for t, r in rules]
   assert any("--clamp-mss-to-pmtu" in r for _, r in rules)  # LTE MTU
   assert all(usb_network.RULE_TAG in r for _, r in rules)
+
+
+def test_adapter_on_the_usb_c_port(tmp_path, monkeypatch):
+  def interface(name, controller):
+    device = tmp_path / "devices" / controller / "xhci-hcd.0" / "usb1" / "1-1" / "1-1:1.0"
+    device.mkdir(parents=True)
+    (tmp_path / "net" / name).mkdir(parents=True)
+    (tmp_path / "net" / name / "device").symlink_to(device)
+  (tmp_path / "net" / "lo").mkdir(parents=True)
+  interface("wwan0", "a800000.ssusb")  # the modem, on another controller
+  monkeypatch.setattr(usb_network, "NET_PATH", tmp_path / "net")
+  assert not usb_network.adapter_present()
+  interface("eth0", "a600000.ssusb")
+  assert usb_network.adapter_present()
